@@ -330,6 +330,10 @@ class Engine:
         """
         out = []
         for item in char.items:
+            # Fixed-roll items (bracelets) cannot be rerolled, so flagging
+            # them is advice the player cannot act on.
+            if not item.rerollable:
+                continue
             bad = [ln for ln in item.sub_stats if self.is_wasted(ln.stat_id)]
             if not bad:
                 continue
@@ -583,93 +587,110 @@ class Engine:
         return [by_name[n] for n in names if n in by_name]
 
     def skill_slots(self, char: Character) -> list[Recommendation]:
-        """Unused gear skill slots, matched against key skills below cap.
+        """Slots currently spent on stats that do nothing for the build.
 
-        Equipment carries `subSkills` worth +N to a named skill, with
-        `subSkillCountMax` as the capacity. This is not Arcana-only: rings,
-        cloak, pauldrons, breastplate and necklace all carry them, and weapons
-        and some earrings hold five.
+        CORRECTION: an earlier version compared `subSkills` against
+        `subSkillCountMax` and reported 48 empty slots. That was wrong.
+        `subStats` and `subSkills` share ONE pool, so a bow carrying five
+        rolled stats is FULL, not empty.
 
-        An empty slot is a free skill level going unused.
+        The real opportunity is slots occupied by wasted stats: reroll them
+        into something useful, or free the slot for a skill grant.
         """
         cfg = self.cfg.get("skill_slots") or {}
-        min_empty = int(cfg.get("min_empty_to_report", 1))
+        min_report = int(cfg.get("min_empty_to_report", 1))
 
-        with_space = [
-            it for it in char.items if it.empty_skill_slots >= min_empty
+        genuinely_empty = [it for it in char.items if it.empty_slots >= min_report]
+        reclaimable = [
+            (it, it.reclaimable_slots) for it in char.items if it.reclaimable_slots
         ]
-        if not with_space:
-            return []
-
-        total_empty = sum(it.empty_skill_slots for it in with_space)
-
-        # Gear grants stack ON TOP of the trained cap -- a skill already
-        # trained to 10 still gains from another grant, which is the whole
-        # reason these slots are worth filling. Rank by which key skills
-        # currently receive the fewest.
-        wanted = sorted(
-            self.key_skills(char),
-            key=lambda s: s.daevanion_bonus + s.gear_bonus,
-        )
 
         out: list[Recommendation] = []
 
-        if wanted:
-            targets = ", ".join(
-                f"{s.name} (+{s.gear_bonus} from gear, shows {s.displayed_level})"
-                for s in wanted[:3]
+        if genuinely_empty:
+            total = sum(it.empty_slots for it in genuinely_empty)
+            where = ", ".join(
+                f"{it.name} ({it.empty_slots})" for it in genuinely_empty[:3]
             )
-            detail = (
-                f"Grants stack above the trained cap, so these still gain. "
-                f"Least-boosted key skills: {targets}."
-            )
-        else:
-            detail = "Spend these on whatever your rotation leans on hardest."
-
-        out.append(
-            Recommendation(
-                category="skillslot",
-                title=(
-                    f"{total_empty} empty gear skill "
-                    f"{_plural(total_empty, 'slot')} across "
-                    f"{len(with_space)} {_plural(len(with_space), 'item')}"
-                ),
-                detail=detail,
-                priority=Priority.HIGH if total_empty >= 10 else Priority.MEDIUM,
-                score=float(total_empty) * 6.0,
-            )
-        )
-
-        # Call out the roomiest items individually; those are the easy wins.
-        biggest = sorted(
-            with_space, key=lambda it: -it.empty_skill_slots
-        )[:4]
-        for item in biggest:
-            if item.empty_skill_slots < 3:
-                continue
-            have = ", ".join(f"{n} +{lv}" for n, lv in item.sub_skills) or "nothing"
-            suggest = ", ".join(s.name for s in wanted[:2]) if wanted else ""
-            detail = (
-                f"{item.empty_skill_slots} of {item.sub_skill_slots} slots unused. "
-                f"Currently grants {have}."
-            )
-            if suggest:
-                detail += f" Good candidates: {suggest}."
             out.append(
                 Recommendation(
                     category="skillslot",
                     title=(
-                        f"{item.name} ({item.slot_name}) has "
-                        f"{item.empty_skill_slots} free skill "
-                        f"{_plural(item.empty_skill_slots, 'slot')}"
+                        f"{total} genuinely empty {_plural(total, 'slot')} "
+                        f"on {len(genuinely_empty)} "
+                        f"{_plural(len(genuinely_empty), 'item')}"
                     ),
-                    detail=detail,
-                    priority=Priority.MEDIUM,
-                    score=float(item.empty_skill_slots) * 4.0,
-                    slot_name=item.slot_name,
-                    item_name=item.name,
+                    detail=f"Nothing rolled in them yet: {where}.",
+                    priority=Priority.HIGH,
+                    score=float(total) * 8.0,
                 )
             )
+
+        if reclaimable:
+            total_bad = sum(len(lines) for _it, lines in reclaimable)
+            reclaimable.sort(key=lambda pair: -len(pair[1]))
+
+            where = ", ".join(
+                f"{it.name} ({', '.join(ln.label for ln in lines)})"
+                for it, lines in reclaimable[:3]
+            )
+            if len(reclaimable) > 3:
+                where += f", +{len(reclaimable) - 3} more"
+
+            least = sorted(
+                self.key_skills(char), key=lambda s: s.daevanion_bonus + s.gear_bonus
+            )[:2]
+            suffix = ""
+            if least:
+                suffix = (
+                    " A freed slot can instead grant a skill level: "
+                    + " or ".join(s.name for s in least)
+                    + " currently receive the fewest."
+                )
+
+            out.append(
+                Recommendation(
+                    category="skillslot",
+                    title=(
+                        f"{total_bad} rolled {_plural(total_bad, 'slot')} "
+                        f"wasted on defensive stats"
+                    ),
+                    detail=(
+                        f"Every item is full, so these slots are the only ones "
+                        f"available. On {where}.{suffix}"
+                    ),
+                    priority=Priority.HIGH if total_bad >= 6 else Priority.MEDIUM,
+                    score=float(total_bad) * 7.0,
+                )
+            )
+
+        # Items whose rolls are fixed cannot be improved at all. Worth saying
+        # once so the absence of advice about them is not mistaken for an
+        # oversight.
+        fixed = [
+            it for it in char.items
+            if it.sub_stats and not it.rerollable and any(ln.wasted for ln in it.sub_stats)
+        ]
+        if fixed:
+            out.append(
+                Recommendation(
+                    category="skillslot",
+                    title=(
+                        f"{len(fixed)} fixed-roll "
+                        f"{_plural(len(fixed), 'item')} cannot be improved"
+                    ),
+                    detail=(
+                        f"{', '.join(it.name for it in fixed)} "
+                        f"{'carries' if len(fixed) == 1 else 'carry'} wasted stats "
+                        f"but {'rolls' if len(fixed) == 1 else 'roll'} fixed, so "
+                        f"rerolling is not possible. Replacing the item is the "
+                        f"only route."
+                    ),
+                    priority=Priority.LOW,
+                    score=2.0,
+                )
+            )
+
         return out
 
     def soul_binding(self, char: Character) -> list[Recommendation]:

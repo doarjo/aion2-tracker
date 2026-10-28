@@ -10,6 +10,9 @@ Parsing rules that matter, all learned the hard way in Phase 0:
 * A skill's listed level ALREADY includes Daevanion and gear grants.
   Adding them again double-counts. Trained level caps at 10 (20 for
   stigmas, which receive no grants).
+* `subStats` and `subSkills` share ONE pool of slots per item. A slot holds
+  either a rolled stat or a skill grant, and `subStatCount` and
+  `subSkillCountMax` report that same capacity twice.
 * Key stats on `id` / `type`. The `name` field is localized and one value
   comes back as untranslated Korean.
 """
@@ -96,9 +99,14 @@ class Item:
     stones: list[StatLine] = field(default_factory=list)
     god_stones: list[dict[str, Any]] = field(default_factory=list)
     sub_skills: list[tuple[str, int]] = field(default_factory=list)
-    #: How many skill grants this item can hold. Weapons and some
-    #: earrings hold 5; bracelets, belt, runes and the amulet hold none.
+    #: subSkillCountMax. See slot_capacity -- this is NOT a separate pool.
     sub_skill_slots: int = 0
+    #: subStatCount. Equals sub_skill_slots on every item that has either,
+    #: because they describe the SAME shared pool from two angles.
+    sub_stat_slots: int = 0
+    #: subStatRandom. False on fixed-roll items such as bracelets, whose
+    #: stats cannot be rerolled at all.
+    sub_stat_random: bool = False
     set_name: str = ""
     set_equipped: int = 0
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -120,9 +128,47 @@ class Item:
         return max(0, self.magic_stone_slots - len(self.stones))
 
     @property
-    def empty_skill_slots(self) -> int:
-        """Unused skill grants. A free skill level going begging."""
-        return max(0, self.sub_skill_slots - len(self.sub_skills))
+    def slot_capacity(self) -> int:
+        """Total rollable slots on this item.
+
+        subStats and subSkills share ONE pool: a slot holds either a rolled
+        stat or a skill grant. `subStatCount` and `subSkillCountMax` report
+        the same number from two angles, which is why comparing subSkills
+        alone against subSkillCountMax wrongly reported a full bow as having
+        five empty slots.
+        """
+        return max(self.sub_stat_slots, self.sub_skill_slots)
+
+    @property
+    def slots_used(self) -> int:
+        if self.slot_capacity == 0:
+            return 0
+        return len(self.sub_stats) + len(self.sub_skills)
+
+    @property
+    def empty_slots(self) -> int:
+        return max(0, self.slot_capacity - self.slots_used)
+
+    @property
+    def rerollable(self) -> bool:
+        """Fixed-roll items cannot be rerolled.
+
+        Bracelets report subStatCount 0 with subStatRandom false, and their
+        stats carry minValue == value. Recommending a reroll on those is
+        advice the player cannot act on.
+        """
+        return self.sub_stat_random and self.sub_stat_slots > 0
+
+    @property
+    def reclaimable_slots(self) -> list[StatLine]:
+        """Slots spent on stats that do nothing for the build.
+
+        These are the real opportunity: reroll them into useful stats, or
+        free the slot for a skill grant.
+        """
+        if not self.rerollable:
+            return []
+        return [ln for ln in self.sub_stats if ln.wasted]
 
     def total(self, stat_id: str) -> float:
         """Sum of one stat across every line on this item."""
@@ -173,6 +219,8 @@ class Item:
                 for s in _arr(payload, "subSkills")
             ],
             sub_skill_slots=int(payload.get("subSkillCountMax") or 0),
+            sub_stat_slots=int(payload.get("subStatCount") or 0),
+            sub_stat_random=bool(payload.get("subStatRandom")),
             set_name=set_obj.get("name", ""),
             set_equipped=int(set_obj.get("equippedCount") or 0),
             raw=payload,

@@ -333,7 +333,7 @@
   <div class="tbl-wrap"><table>
     <thead><tr>
       <th>Slot</th><th>Item</th><th class="num">Enh</th><th class="num">Bind</th>
-      <th class="num">Skills</th><th>Manastones</th><th class="num">Waste</th>
+      <th class="num">Slots</th><th>Manastones</th><th class="num">Waste</th>
     </tr></thead>
     <tbody>
     {% for it in character.items %}
@@ -346,8 +346,9 @@
             style="font-weight:400">/{{ it.max_enchant_level }}</span></td>
         <td class="num {% if it.soul_bind_rate < 50 %}bad{% elif it.soul_bind_rate < 90 %}muted{% else %}dim{% endif %}">
           {{ "%g"|format(it.soul_bind_rate) }}%</td>
-        <td class="num {% if it.empty_skill_slots %}enh{% else %}dim{% endif %}">
-          {% if it.sub_skill_slots %}{{ it.sub_skills|length }}/{{ it.sub_skill_slots }}{% else %}·{% endif %}</td>
+        <td class="num {% if it.reclaimable_slots %}bad{% elif it.empty_slots %}enh{% else %}dim{% endif %}"
+            title="{{ it.sub_stats|length }} stats + {{ it.sub_skills|length }} skills">
+          {% if it.slot_capacity %}{{ it.slots_used }}/{{ it.slot_capacity }}{% if not it.rerollable %}<span class="dim">f</span>{% endif %}{% else %}·{% endif %}</td>
         <td>
           {% for st in it.stones %}
             <span class="stone {% if st.wasted %}waste{% endif %}"

@@ -338,8 +338,9 @@ def _totals(char: Any, engine: Engine) -> dict[str, Any]:
         "accuracy_headroom": engine._accuracy_headroom(char),  # noqa: SLF001
         "items": len(char.items),
         "stigmas": sum(1 for s in char.skills if s.is_stigma),
-        "skill_slots_empty": sum(it.empty_skill_slots for it in char.items),
-        "skill_slots_total": sum(it.sub_skill_slots for it in char.items),
+        "slots_empty": sum(it.empty_slots for it in char.items),
+        "slots_total": sum(it.slot_capacity for it in char.items),
+        "slots_wasted": sum(len(it.reclaimable_slots) for it in char.items),
         "has_enhancement": char.has_enhancement_data,
         "enh_levels": char.enhancement_levels_available,
         "enh_top": top_enh,
