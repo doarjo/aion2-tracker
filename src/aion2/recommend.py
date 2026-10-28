@@ -152,6 +152,7 @@ class Engine:
             self.profile_label = self.profile
             self.weights = dict(self.cfg.get("stat_weights") or {})
 
+        self._key_skill_names: list[Skill] = []
         wasted = self.cfg.get("wasted_stats")
         self.wasted_ids = frozenset(wasted) if wasted else S.WASTED_DPS_IDS
 
@@ -693,6 +694,195 @@ class Engine:
 
         return out
 
+    def slot_value(self, item: Item) -> float:
+        """Weighted worth of an item's rolled sub-stats under the active goal.
+
+        Percentages are scaled up because a 8.3% Weapon Damage Boost is worth
+        far more than its face value of 8 suggests next to a flat Accuracy 51.
+        """
+        total = 0.0
+        for ln in item.sub_stats:
+            w = self.weight(ln.stat_id)
+            if w <= 0:
+                continue
+            total += w * (ln.value * 10 if ln.percent else ln.value)
+        return total
+
+    def slot_quality(self, item: Item) -> tuple[int, int, int]:
+        """How well an item's slots are spent: (key skills, other skills, wasted)."""
+        key = {s.name for s in self._key_skill_names}
+        key_skills = sum(1 for n, _lv in item.sub_skills if n in key)
+        other_skills = len(item.sub_skills) - key_skills
+        wasted = len(item.reclaimable_slots)
+        return key_skills, other_skills, wasted
+
+    def best_in_slot(self, char: Character) -> list[Recommendation]:
+        """Compare each item against the best roll PROVEN possible for it.
+
+        The roll pool per item is not published, so the engine never invents
+        one. Instead it uses two tiers of evidence drawn from gear already
+        equipped:
+
+        * an identical item in another slot -- proof, since the same item
+          demonstrably rolled that way
+        * a different item of the same category -- plausible, not proven
+
+        This is what answers "my rings don't have Snipe": one ring does, and
+        it is the same item, so the other one can.
+        """
+        self._key_skill_names = self.key_skills(char)
+        key_names = {s.name for s in self._key_skill_names}
+
+        out: list[Recommendation] = []
+
+        # -- the big picture: which slots carry their weight ----------------
+        rollable = [it for it in char.items if it.rerollable]
+        if len(rollable) >= 4:
+            ranked_all = sorted(rollable, key=self.slot_value)
+            weakest = ranked_all[:4]
+            strongest = ranked_all[-1]
+
+            out.append(
+                Recommendation(
+                    category="bis",
+                    title="Weakest rolled slots in your build",
+                    detail=(
+                        "Ranked by how much the rolled stats are worth for "
+                        f"{self.profile_label}: "
+                        + ", ".join(
+                            f"{it.slot_name} {self.slot_value(it):.0f}"
+                            for it in weakest
+                        )
+                        + f". For scale, {strongest.slot_name} scores "
+                        f"{self.slot_value(strongest):.0f}. These are the slots "
+                        f"where a reroll buys the most."
+                    ),
+                    priority=Priority.INFO,
+                    score=0.0,
+                )
+            )
+
+        # -- tier 1: identical items ---------------------------------------
+        by_id: dict[int, list[Item]] = {}
+        for it in char.items:
+            if it.slot_capacity:
+                by_id.setdefault(it.item_id, []).append(it)
+
+        for copies in by_id.values():
+            if len(copies) < 2:
+                continue
+            ranked = sorted(
+                copies, key=lambda i: self.slot_quality(i), reverse=True
+            )
+            best, worst = ranked[0], ranked[-1]
+            if self.slot_quality(best) == self.slot_quality(worst):
+                continue
+
+            best_skills = [n for n, _ in best.sub_skills]
+            worst_skills = [n for n, _ in worst.sub_skills]
+            missing = [n for n in best_skills if n not in worst_skills]
+            dead = [ln.label for ln in worst.reclaimable_slots]
+
+            if not missing and not dead:
+                continue
+
+            detail = (
+                f"{best.slot_name} and {worst.slot_name} are the same item, so "
+                f"anything one rolled the other can roll."
+            )
+            if best_skills:
+                detail += f" {best.slot_name} grants {', '.join(best_skills)}."
+            if missing:
+                detail += (
+                    f" {worst.slot_name} is missing {', '.join(missing)}"
+                    + (f" while carrying {', '.join(dead)}." if dead else ".")
+                )
+            elif dead:
+                detail += f" {worst.slot_name} carries {', '.join(dead)}."
+
+            priority = Priority.HIGH if any(
+                n in key_names for n in missing
+            ) else Priority.MEDIUM
+
+            out.append(
+                Recommendation(
+                    category="bis",
+                    title=(
+                        f"{worst.name} ({worst.slot_name}) is rolled worse than "
+                        f"your identical {best.slot_name}"
+                    ),
+                    detail=detail,
+                    priority=priority,
+                    score=40.0 + 10.0 * len(missing) + 5.0 * len(dead),
+                    slot_name=worst.slot_name,
+                    item_name=worst.name,
+                )
+            )
+
+        # -- tier 2: same category, different item -------------------------
+        by_cat: dict[str, list[Item]] = {}
+        for it in char.items:
+            if it.rerollable and it.category:
+                by_cat.setdefault(it.category, []).append(it)
+
+        for category, items in by_cat.items():
+            if len(items) < 2:
+                continue
+            # Skip ones already covered as identical copies.
+            if len({i.item_id for i in items}) < 2:
+                continue
+
+            # Rank by the weighted value the rolls actually deliver, not by
+            # counting wasted lines. Two earrings can each carry one "wasted"
+            # stat while one rolls Accuracy 51 and the other rolls HP Regen,
+            # which a count treats as equal and a weighting does not.
+            scored = sorted(items, key=self.slot_value)
+            worst, best = scored[0], scored[-1]
+            if worst is best:
+                continue
+
+            gap = self.slot_value(best) - self.slot_value(worst)
+            if gap < 20.0:
+                continue
+
+            useful = [
+                f"{ln.label} {ln.value:g}"
+                for ln in sorted(best.sub_stats, key=lambda l: -self.weight(l.stat_id))
+                if self.weight(ln.stat_id) > 0
+            ]
+            dead = [
+                ln.label for ln in worst.sub_stats if self.weight(ln.stat_id) <= 0
+            ]
+            if not useful:
+                continue
+
+            detail = (
+                f"{worst.slot_name} rolls "
+                + (", ".join(dead[:4]) if dead else "little of value")
+                + f", while {best.slot_name} rolls {', '.join(useful[:3])}."
+            )
+            detail += (
+                " Different items, so not proven for this one, but it shows "
+                "what the slot is worth when rolled well."
+            )
+
+            out.append(
+                Recommendation(
+                    category="bis",
+                    title=(
+                        f"{worst.name} ({worst.slot_name}) is your weakest "
+                        f"{category.lower()}"
+                    ),
+                    detail=detail,
+                    priority=Priority.MEDIUM,
+                    score=min(gap, 120.0),
+                    slot_name=worst.slot_name,
+                    item_name=worst.name,
+                )
+            )
+
+        return out
+
     def soul_binding(self, char: Character) -> list[Recommendation]:
         """Items well short of fully soul bound.
 
@@ -929,6 +1119,7 @@ class Engine:
         recs += self.enhancement_upgrades(char)
         recs += self.skill_levels(char)
         recs += self.skill_slots(char)
+        recs += self.best_in_slot(char)
         recs += self.soul_binding(char)
         recs += self.empty_stone_slots(char)
         recs += self.manastone_swaps(char)

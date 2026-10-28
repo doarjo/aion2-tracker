@@ -236,6 +236,7 @@ CATEGORY_LABELS: dict[str, str] = {
     "reroll": "Sub-stat rerolls",
     "skill": "Skills",
     "skillslot": "Gear skill slots",
+    "bis": "Best in slot",
     "arcana": "Arcana",
     "soulbind": "Soul binding",
     "attributes": "Attributes",
