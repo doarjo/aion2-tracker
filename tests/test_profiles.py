@@ -136,9 +136,43 @@ def test_enhancement_uses_stored_exact_values(cfg):
     )
     recs = Engine(cfg).enhancement_upgrades(char)
     assert len(recs) == 1
-    assert recs[0].gains == {"DefensePierce": 400.0}
-    assert "+2 to +10" in recs[0].title
-    assert "not an estimate" in recs[0].detail
+    rec = recs[0]
+
+    assert rec.gains == {"DefensePierce": 400.0}
+    assert "+2" in rec.title and "+10" in rec.title
+
+
+def test_recommendation_text_does_not_repeat_itself(cfg):
+    """Title, detail and gains each carried the same numbers, which is most
+    of why the page ran to eight screens. Detail must not restate the gains."""
+    char = _bare_character(
+        items=[_item(23, "Rune1", 2, 10)],
+        enhancement_headroom={"23": {"DefensePierce": 400.0}},
+    )
+    rec = Engine(cfg).enhancement_upgrades(char)[0]
+
+    assert "400" not in rec.detail, "gains belong in `gains`, not in prose"
+    assert rec.detail == "8 levels of headroom."
+    # The PLAYNC caveat is a page footnote now, not a per-row repetition.
+    assert "PLAYNC" not in rec.detail
+
+
+def test_plurals_are_not_parenthesised(cfg):
+    """'8 level(s)' read like an unfinished form field."""
+    one = _bare_character(
+        items=[_item(23, "Rune1", 9, 10)],
+        enhancement_headroom={"23": {"DefensePierce": 50.0}},
+    )
+    many = _bare_character(
+        items=[_item(23, "Rune1", 2, 10)],
+        enhancement_headroom={"23": {"DefensePierce": 400.0}},
+    )
+    assert "1 level of" in Engine(cfg).enhancement_upgrades(one)[0].detail
+    assert "8 levels of" in Engine(cfg).enhancement_upgrades(many)[0].detail
+    for char in (one, many):
+        for rec in Engine(cfg).enhancement_upgrades(char):
+            assert "(s)" not in rec.detail
+            assert "(s)" not in rec.title
 
 
 def test_paired_items_are_distinguishable(cfg):

@@ -14,11 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .models import Character  # noqa: F401  (used in type hints below)
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import db
+from . import stats as S
 from .client import Aion2Client
 from .config import Settings, load_settings
 from .fetch import snapshot_payloads
@@ -33,6 +36,10 @@ _jinja = Environment(
     loader=FileSystemLoader(TEMPLATES),
     autoescape=select_autoescape(["html"]),
 )
+
+# Templates deal in stat ids; humans want the display name. Without this,
+# "ArmorDefense +1295" leaks into the page instead of "Defense +1,295".
+_jinja.filters["statname"] = lambda sid: S.display_name(sid)
 
 # One refresh at a time. A snapshot is ~30 rate-limited requests and running
 # two concurrently would both double our request rate and race on the DB.
@@ -116,7 +123,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settings=cfg,
                     problems=cfg.validate(),
                     recommendations=[],
+                    plan={"top": [], "groups": [], "context": [],
+                          "max_score": 1.0, "total": 0},
                     taken_at=None,
+                    taken_ago="",
                     totals={},
                     profiles=profiles,
                     active_profile=eng.profile,
@@ -125,13 +135,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         recs = eng.audit(char)
+        taken = row["taken_at"] if row else None
         return HTMLResponse(
             template.render(
                 character=char,
                 settings=cfg,
                 problems=cfg.validate(),
                 recommendations=recs,
-                taken_at=row["taken_at"] if row else None,
+                plan=_split_recommendations(recs),
+                taken_at=taken,
+                taken_ago=_humanise(taken),
                 totals=_totals(char, eng),
                 profiles=profiles,
                 active_profile=eng.profile,
@@ -213,6 +226,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+CATEGORY_LABELS: dict[str, str] = {
+    "enhancement": "Enhancement",
+    "manastone": "Manastones",
+    "reroll": "Sub-stat rerolls",
+    "skill": "Skills",
+    "arcana": "Arcana",
+    "attributes": "Attributes",
+    "accuracy": "Accuracy",
+}
+
+#: Rows that state a fact rather than ask for an action. Kept out of the
+#: ranked list so "do this next" means what it says.
+CONTEXT_CATEGORIES = frozenset({"accuracy"})
+
+
+def _humanise(iso: str | None) -> str:
+    """'3 hours ago' beats '2026-10-28T21:19:10+00:00' in a header."""
+    if not iso:
+        return ""
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+
+    secs = (datetime.now(timezone.utc) - when).total_seconds()
+    if secs < 90:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)} min ago"
+    if secs < 86400:
+        hours = int(secs // 3600)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(secs // 86400)
+    if days < 30:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    return when.strftime("%d %b %Y")
+
+
+def _split_recommendations(
+    recs: list[Recommendation], top_n: int = 3
+) -> dict[str, Any]:
+    """Headline actions, then everything else grouped by category.
+
+    42 flat rows was the single worst thing about the old page. Three things
+    to do next, with the rest filed behind headings, is the same information
+    at a fraction of the height.
+    """
+    actionable = [r for r in recs if r.category not in CONTEXT_CATEGORIES]
+    context = [r for r in recs if r.category in CONTEXT_CATEGORIES]
+
+    top = actionable[:top_n]
+    rest = actionable[top_n:]
+
+    groups: dict[str, list[Recommendation]] = {}
+    for r in rest:
+        groups.setdefault(r.category, []).append(r)
+
+    ordered = sorted(
+        groups.items(),
+        key=lambda kv: -max((r.score for r in kv[1]), default=0.0),
+    )
+
+    max_score = max((r.score for r in actionable), default=1.0) or 1.0
+
+    return {
+        "top": top,
+        "groups": [
+            {
+                "key": key,
+                "label": CATEGORY_LABELS.get(key, key.title()),
+                "items": items,
+                "count": len(items),
+                "best": max((r.score for r in items), default=0.0),
+            }
+            for key, items in ordered
+        ],
+        "context": context,
+        "max_score": max_score,
+        "total": len(actionable),
+    }
+
+
 def _totals(char: Any, engine: Engine) -> dict[str, Any]:
     """Headline numbers for the dashboard cards."""
     wasted = char.wasted_lines
@@ -220,7 +317,12 @@ def _totals(char: Any, engine: Engine) -> dict[str, Any]:
         1 for it in char.items for st in it.stones if engine.is_wasted(st.stat_id)
     )
     enh_totals = char.total_enhancement_gain()
-    top_enh = sorted(enh_totals.items(), key=lambda kv: -kv[1])[:3]
+    # Use display names, not raw stat ids -- "ArmorDefense +1295" was leaking
+    # into the UI where it should read "Defense +1,295".
+    top_enh = [
+        (S.display_name(stat_id), value)
+        for stat_id, value in sorted(enh_totals.items(), key=lambda kv: -kv[1])[:3]
+    ]
 
     return {
         "gear_accuracy": char.gear_accuracy,

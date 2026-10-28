@@ -36,6 +36,11 @@ class ConfigNotFound(RuntimeError):
     """
 
 
+def _plural(n: float, word: str, suffix: str = "s") -> str:
+    """'1 level' / '8 levels'. The old '8 level(s)' read like a form field."""
+    return word if n == 1 else word + suffix
+
+
 class Priority(IntEnum):
     CRITICAL = 4
     HIGH = 3
@@ -62,13 +67,17 @@ class Recommendation:
     action: str = ""
 
     @property
+    def sorted_gains(self) -> list[tuple[str, float]]:
+        """Biggest first. Dict order is insertion order, which put '+4 Combat
+        Speed' ahead of '+400 Penetration' in the UI."""
+        return sorted(self.gains.items(), key=lambda kv: -abs(kv[1]))
+
+    @property
     def gain_summary(self) -> str:
         if not self.gains:
             return ""
         return ", ".join(
-            f"+{v:g} {S.display_name(k)}" for k, v in sorted(
-                self.gains.items(), key=lambda kv: -abs(kv[1])
-            )
+            f"+{v:g} {S.display_name(k)}" for k, v in self.sorted_gains
         )
 
 
@@ -237,23 +246,16 @@ class Engine:
             if count > 4:
                 where += f", and {count - 4} more"
 
-            plural = "s" if count != 1 else ""
-            swap_phrase = (
-                f"swapping all {count} is worth" if count > 1 else "swapping it is worth"
-            )
-
             out.append(
                 Recommendation(
                     category="manastone",
                     title=(
-                        f"Replace {count}x {grade} {S.display_name(stat_id)} "
-                        f"stone{plural} with {S.display_name(new_id)}"
+                        f"Swap {count}× {grade} {S.display_name(stat_id)} "
+                        f"→ {S.display_name(new_id)}"
                     ),
                     detail=(
-                        f"{S.display_name(stat_id)} does nothing for PvE damage. "
-                        f"A {grade} {S.display_name(new_id)} stone gives "
-                        f"+{new_value:g} each, so {swap_phrase} "
-                        f"+{total_gain:g} {S.display_name(new_id)}. Found on: {where}."
+                        f"{S.display_name(stat_id)} does nothing for damage. "
+                        f"On {where}."
                     ),
                     priority=Priority.HIGH if score >= 40 else Priority.MEDIUM,
                     score=score,
@@ -261,10 +263,6 @@ class Engine:
                     item_name=entries[0][0].name if count == 1 else f"{count} items",
                     gains=gains,
                     losses={stat_id: sum(s.value for _i, s in entries)},
-                    action=(
-                        f"Swap {count}x {grade} {S.display_name(stat_id)} manastone{plural} "
-                        f"for {grade} {S.display_name(new_id)}."
-                    ),
                 )
             )
         return out
@@ -298,25 +296,27 @@ class Engine:
                 continue
             rep = self._best_replacement("Legend")
             gains: dict[str, float] = {}
-            detail = f"{item.name} has {empty} empty manastone slot(s)."
+            detail = "Unsocketed slots are free stats going unused."
             if rep:
                 stat_id, value = rep
                 gains = {stat_id: float(value * empty)}
-                detail += (
-                    f" Filling them with Legend {S.display_name(stat_id)} "
-                    f"would add +{value * empty:g}."
+                detail = (
+                    f"Free stats going unused. Legend "
+                    f"{S.display_name(stat_id)} stones are the best fit."
                 )
             out.append(
                 Recommendation(
                     category="manastone",
-                    title=f"{empty} empty manastone slot(s) on {item.name}",
+                    title=(
+                        f"Socket {empty} empty manastone "
+                        f"{_plural(empty, 'slot')} on {item.name}"
+                    ),
                     detail=detail,
                     priority=Priority.HIGH,
                     score=self.score_gains(gains) if gains else 10.0,
                     slot_name=item.slot_name,
                     item_name=item.name,
                     gains=gains,
-                    action=f"Socket {empty} manastone(s) into {item.name}.",
                 )
             )
         return out
@@ -337,19 +337,19 @@ class Engine:
             out.append(
                 Recommendation(
                     category="reroll",
-                    title=f"{len(bad)} wasted sub-stat line(s) on {item.name}",
+                    title=(
+                        f"Reroll {len(bad)} wasted sub-"
+                        f"{_plural(len(bad), 'stat')} on {item.name}"
+                    ),
                     detail=(
-                        f"{', '.join(f'{ln.label} {ln.value:g}' for ln in bad)}. "
-                        f"{total:g} points of stat budget doing nothing for PvE "
-                        f"damage. Sub-stat ranges are not published, so this "
-                        f"flags the stat, not the quality of the roll."
+                        f"{', '.join(f'{ln.label} {ln.value:g}' for ln in bad)} "
+                        f"— {total:g} points doing nothing."
                     ),
                     priority=Priority.MEDIUM if total >= 100 else Priority.LOW,
                     score=total * 0.05,
                     slot_name=item.slot_name,
                     item_name=item.name,
                     losses={ln.stat_id: ln.value for ln in bad},
-                    action=f"Reroll the flagged sub-stats on {item.name}.",
                 )
             )
         return out
@@ -548,10 +548,6 @@ class Engine:
                 continue
 
             levels = item.max_enchant_level - item.enchant_level
-            gain_text = ", ".join(
-                f"{S.display_name(k)} +{v:g}"
-                for k, v in sorted(gains.items(), key=lambda kv: -kv[1])
-            )
 
             # An item sitting far below its cap is both a bigger win and
             # usually cheaper per level, so weight those up.
@@ -564,27 +560,22 @@ class Engine:
             else:
                 prio = Priority.LOW
 
-            # Include the slot: paired items such as the two Clash Runes
-            # otherwise render as two identical rows.
+            # Title carries the action; `gains` carries the numbers. Detail
+            # adds only what neither already says -- the three used to repeat
+            # each other, which is most of why the page was eight screens long.
             out.append(
                 Recommendation(
                     category="enhancement",
                     title=(
                         f"Enhance {item.name} ({item.slot_name}) "
-                        f"from +{item.enchant_level} to +{item.max_enchant_level}"
+                        f"+{item.enchant_level} → +{item.max_enchant_level}"
                     ),
-                    detail=(
-                        f"{levels} level(s) of headroom. Exact values from "
-                        f"PLAYNC, not an estimate: {gain_text}."
-                    ),
+                    detail=f"{levels} {_plural(levels, 'level')} of headroom.",
                     priority=prio,
                     score=score,
                     slot_name=item.slot_name,
                     item_name=item.name,
                     gains=dict(gains),
-                    action=(
-                        f"Enhance {item.name} to +{item.max_enchant_level}."
-                    ),
                 )
             )
         return out
