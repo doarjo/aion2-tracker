@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if character %}{{ character.name }} — AION 2 Tracker{% else %}AION 2 Tracker{% endif %}</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel-2:#1c2430; --line:#263040;
+    --text:#e6edf3; --muted:#8b98a9; --dim:#5d6b7d;
+    --accent:#4da3ff; --gold:#e3b341;
+    --crit:#f85149; --high:#ff8c42; --med:#e3b341; --low:#58a6ff; --info:#8b98a9;
+    --good:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  a{color:var(--accent)}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 20px 72px}
+
+  /* ---------- header ---------- */
+  header.hero{
+    display:flex;flex-wrap:wrap;gap:20px;align-items:center;justify-content:space-between;
+    background:linear-gradient(135deg,#161b22,#1c2430);
+    border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin-bottom:20px;
+  }
+  .who h1{margin:0;font-size:26px;letter-spacing:.3px}
+  .who .sub{color:var(--muted);margin-top:4px;font-size:13px}
+  .hero-stats{display:flex;gap:28px;flex-wrap:wrap}
+  .hero-stat{text-align:right}
+  .hero-stat .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}
+  .hero-stat .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.7px}
+
+  /* ---------- cards ---------- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .v{font-size:23px;font-weight:650;font-variant-numeric:tabular-nums}
+  .card .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.7px;margin-top:2px}
+  .card .note{color:var(--dim);font-size:11px;margin-top:6px;line-height:1.4}
+
+  /* ---------- sections ---------- */
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);
+     margin:30px 0 12px;font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+
+  /* ---------- recommendations ---------- */
+  .rec{display:flex;gap:14px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .rec:last-child{border-bottom:none}
+  .rec:hover{background:var(--panel-2)}
+  .rank{color:var(--dim);font-variant-numeric:tabular-nums;min-width:26px;text-align:right;padding-top:2px}
+  .rec-body{flex:1;min-width:0}
+  .rec-title{font-weight:600;margin-bottom:3px}
+  .rec-detail{color:var(--muted);font-size:13px}
+  .rec-gain{margin-top:6px;font-size:12.5px;color:var(--good);font-weight:600}
+  .rec-meta{margin-top:5px;font-size:11.5px;color:var(--dim)}
+  .badge{
+    display:inline-block;font-size:10px;font-weight:700;letter-spacing:.7px;
+    text-transform:uppercase;padding:3px 8px;border-radius:999px;white-space:nowrap;
+    align-self:flex-start;margin-top:1px
+  }
+  .b-critical{background:rgba(248,81,73,.16);color:var(--crit);border:1px solid rgba(248,81,73,.35)}
+  .b-high{background:rgba(255,140,66,.16);color:var(--high);border:1px solid rgba(255,140,66,.35)}
+  .b-medium{background:rgba(227,179,65,.14);color:var(--med);border:1px solid rgba(227,179,65,.32)}
+  .b-low{background:rgba(88,166,255,.14);color:var(--low);border:1px solid rgba(88,166,255,.32)}
+  .b-info{background:rgba(139,152,169,.14);color:var(--info);border:1px solid rgba(139,152,169,.3)}
+
+  /* ---------- tables ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{
+    text-align:left;color:var(--muted);font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.7px;padding:10px 14px;border-bottom:1px solid var(--line);font-weight:600
+  }
+  td{padding:9px 14px;border-bottom:1px solid rgba(38,48,64,.5);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--panel-2)}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .enh{color:var(--gold);font-weight:600}
+  .muted{color:var(--muted)}
+  .dim{color:var(--dim)}
+  .bad{color:var(--crit)}
+  .pill{
+    display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;margin:1px 3px 1px 0;
+    background:rgba(139,152,169,.12);border:1px solid rgba(139,152,169,.22)
+  }
+  .pill.waste{background:rgba(248,81,73,.12);color:#ff9b95;border-color:rgba(248,81,73,.3)}
+  .grade-Common{color:#9aa7b6}.grade-Rare{color:#58a6ff}
+  .grade-Legend{color:#d2a8ff}.grade-Unique{color:#e3b341}
+
+  .notice{
+    background:rgba(227,179,65,.08);border:1px solid rgba(227,179,65,.3);
+    border-radius:10px;padding:16px 18px;margin-bottom:20px;color:#f0d79a
+  }
+  .notice code{background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;font-size:12.5px}
+  footer{margin-top:40px;color:var(--dim);font-size:11.5px;text-align:center;line-height:1.7}
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+{% if problems %}
+  <div class="notice">
+    <strong>Configuration problems</strong>
+    <ul style="margin:8px 0 0 18px;padding:0">
+      {% for p in problems %}<li>{{ p }}</li>{% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+{% if not character %}
+  <header class="hero"><div class="who">
+    <h1>No snapshot yet</h1>
+    <div class="sub">Nothing has been captured for this character.</div>
+  </div></header>
+  <div class="notice">
+    Take the first snapshot with <code>aion2 snapshot</code> on the command line,
+    or <code>POST /refresh</code>. A full capture is about 30 rate-limited
+    requests and takes roughly two minutes.
+  </div>
+{% else %}
+
+  <header class="hero">
+    <div class="who">
+      <h1>{{ character.name }}</h1>
+      <div class="sub">
+        Level {{ character.level }} {{ character.class_name }}
+        &middot; {{ character.race }}
+        &middot; {{ character.server_name }}
+        {% if taken_at %}&middot; snapshot {{ taken_at }}{% endif %}
+      </div>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <div class="v">{{ "{:,}".format(character.combat_power) }}</div>
+        <div class="k">Combat Power</div>
+      </div>
+      <div class="hero-stat">
+        <div class="v">{{ "{:,}".format(character.item_level) }}</div>
+        <div class="k">Item Level</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="cards">
+    <div class="card">
+      <div class="v">{{ "%g"|format(totals.gear_accuracy) }}</div>
+      <div class="k">Gear Accuracy</div>
+      <div class="note">Flat Accuracy readable from gear. Not your in-game total:
+        the class base value and buffs are not published.</div>
+    </div>
+    <div class="card">
+      <div class="v" style="color:var(--good)">+{{ "%g"|format(totals.accuracy_headroom) }}</div>
+      <div class="k">Accuracy Available</div>
+      <div class="note">If every wasted manastone became an Accuracy stone of the
+        same grade.</div>
+    </div>
+    <div class="card">
+      <div class="v bad">{{ totals.wasted_total }}</div>
+      <div class="k">Wasted Lines</div>
+      <div class="note">{{ totals.wasted_stones }} manastones,
+        {{ totals.wasted_substats }} sub-stats.</div>
+    </div>
+    <div class="card">
+      <div class="v">{{ "%g"|format(character.attributes.get('AGI', 0)) }}
+        <span class="dim" style="font-size:15px">/ {{ "%g"|format(character.attributes.get('DEX', 0)) }}</span>
+      </div>
+      <div class="k">Precision / Dexterity</div>
+      <div class="note">Precision drives Accuracy and Crit. Dexterity is defensive.</div>
+    </div>
+  </div>
+
+  <h2>Fix this first &mdash; {{ recommendations|length }} recommendations</h2>
+  <div class="panel">
+    {% for r in recommendations %}
+      <div class="rec">
+        <div class="rank">{{ loop.index }}</div>
+        <span class="badge b-{{ r.priority.label|lower }}">{{ r.priority.label }}</span>
+        <div class="rec-body">
+          <div class="rec-title">{{ r.title }}</div>
+          <div class="rec-detail">{{ r.detail }}</div>
+          {% if r.gain_summary %}<div class="rec-gain">Gain: {{ r.gain_summary }}</div>{% endif %}
+          {% if r.action %}<div class="rec-meta">Action: {{ r.action }}</div>{% endif %}
+        </div>
+      </div>
+    {% else %}
+      <div class="rec"><div class="rec-body">
+        <div class="rec-title">Nothing to flag.</div>
+        <div class="rec-detail">No wasted stats, no skill shortfalls, no unspent
+          enhancement headroom.</div>
+      </div></div>
+    {% endfor %}
+  </div>
+
+  <h2>Equipment</h2>
+  <div class="panel">
+    <table>
+      <thead><tr>
+        <th>Slot</th><th>Item</th><th class="num">Enh</th><th>Grade</th>
+        <th>Manastones</th><th class="num">Wasted</th>
+      </tr></thead>
+      <tbody>
+      {% for it in character.items %}
+        <tr>
+          <td class="muted">{{ it.slot_name }}</td>
+          <td>{{ it.name }}
+            {% if it.set_name %}<span class="dim">&middot; {{ it.set_name }}
+              {{ it.set_equipped }}pc</span>{% endif %}</td>
+          <td class="num enh">+{{ it.enchant_level }}<span class="dim" style="font-weight:400">/{{ it.max_enchant_level }}</span></td>
+          <td class="grade-{{ it.grade }}">{{ it.grade }}</td>
+          <td>
+            {% for st in it.stones %}
+              <span class="pill {% if st.wasted %}waste{% endif %}"
+                    title="{{ st.grade }}">{{ st.label }} +{{ "%g"|format(st.value) }}</span>
+            {% endfor %}
+            {% if it.empty_stone_slots %}
+              <span class="pill dim">{{ it.empty_stone_slots }} empty</span>
+            {% endif %}
+          </td>
+          <td class="num {% if it.wasted_lines %}bad{% else %}dim{% endif %}">
+            {{ it.wasted_lines|length }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cols" style="margin-top:16px">
+    <div>
+      <h2>Stigmas &amp; key skills</h2>
+      <div class="panel"><table>
+        <thead><tr><th>Skill</th><th class="num">Base</th><th class="num">Daev</th>
+          <th class="num">Arcana</th><th class="num">Effective</th></tr></thead>
+        <tbody>
+        {% for s in character.skills|sort(attribute='effective_level', reverse=true) %}
+          {% if s.is_stigma or s.effective_level >= 20 %}
+          <tr>
+            <td>{{ s.name }}{% if s.is_stigma %}
+              <span class="dim">&middot; stigma</span>{% endif %}</td>
+            <td class="num muted">{{ s.base_level }}</td>
+            <td class="num muted">{{ s.daevanion_bonus or '&mdash;'|safe }}</td>
+            <td class="num muted">{{ s.arcana_bonus or '&mdash;'|safe }}</td>
+            <td class="num" style="font-weight:650">{{ s.effective_level }}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div>
+      <h2>Daevanion</h2>
+      <div class="panel"><table>
+        <thead><tr><th>Board</th><th class="num">Nodes</th><th class="num">Open</th></tr></thead>
+        <tbody>
+        {% for b in character.boards %}
+          <tr>
+            <td>{{ b.name }} <span class="dim">#{{ b.board_id }}</span></td>
+            <td class="num muted">{{ b.open_nodes }} / {{ b.total_nodes }}</td>
+            <td class="num">{{ "%.0f"|format(b.percent_open) }}%</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+{% endif %}
+
+  <footer>
+    Data from the public PLAYNC character endpoints &middot; read-only, rate limited.<br>
+    Accuracy is tracked as components, never as a derived total &mdash; see
+    <code>docs/endpoints.md</code> section 4.
+  </footer>
+</div>
+</body>
+</html>

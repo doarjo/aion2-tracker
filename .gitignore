@@ -1,0 +1,33 @@
+# secrets and local config
+.env
+.env.local
+
+# runtime data
+/data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# raw endpoint captures (regenerate with scripts/discover.ps1)
+/captures/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# editors / os
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp

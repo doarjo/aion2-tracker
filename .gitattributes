@@ -1,0 +1,12 @@
+# Normalise to LF in the repo so the Linux container and Windows dev agree.
+* text=auto eol=lf
+
+# PowerShell is run on Windows; keep CRLF locally.
+*.ps1 text eol=crlf
+
+# Captured API responses are fixtures. Keep them byte-stable.
+tests/fixtures/*.json -text
+
+*.png binary
+*.jpg binary
+*.db binary

@@ -1,0 +1,76 @@
+# Tunable targets for the build audit.
+#
+# These are COMMUNITY ESTIMATES, not official values. Change them freely --
+# nothing in the engine hardcodes a number from this file.
+
+class: Ranger
+content: PvE
+
+accuracy:
+  # In-game Accuracy targets. The API cannot read your in-game total (see
+  # docs/endpoints.md section 4), so these are compared against the figure you
+  # record in config/manual.yaml, not against a computed number.
+  target_min: 1100
+  target_max: 1200
+  raid_target: 1450
+
+  # Flat Accuracy readable from gear alone. Used for trend tracking and for
+  # measuring how much a recommendation actually gains you.
+  gear_warn_below: 400
+
+critical_hit:
+  # Marking Shot adds a flat 300 on top.
+  marking_shot_bonus: 300
+  cap_target_percent: 50
+
+attributes:
+  # Precision (AGI) drives Accuracy and Critical Hit for a Ranger.
+  # Dexterity (DEX) drives Evasion, Block and Crit Resist -- defensive, wasted.
+  flag_dexterity_above_precision: true
+
+# Skills worth checking, by effective level (listed + Daevanion + Arcana).
+skill_targets:
+  Deadshot: 20
+  Gale Arrow: 20
+  Drill Dart: 16
+  Snipe: 16
+  Tempest Shot: 16
+  Vaizel's Authority: 20
+
+# Stats that do nothing for Ranger PvE damage. Flagged as reroll or replace
+# candidates when they appear on a rolled sub-stat or a manastone.
+# Stat ids, not display names. See src/aion2/stats.py for the vocabulary.
+wasted_stats:
+  - DEX
+  - Evasion
+  - ArmorEvasion
+  - Block
+  - ArmorDefense
+  - CriticalResist
+  - CriticalDamageDefense
+  - FrontAttackDefense
+  - PvPDamageDefense
+
+# How much one point of each stat is worth when ranking recommendations.
+# Accuracy is weighted hardest because it is the current bottleneck. Retune
+# once Accuracy is on target.
+stat_weights:
+  WeaponAccuracy: 3.0
+  Accuracy: 3.0
+  Critical: 1.5
+  WeaponFixingDamage: 1.2
+  DefensePierce: 1.0
+  AmplifyWeaponDamage: 2.0
+  AmplifyAllDamage: 2.0
+  PvEAmplifyDamage: 2.0
+  AdditionalHitRate: 1.0
+  Perfect: 1.0
+  AGI: 2.5
+  STR: 0.8
+
+enhancement:
+  # Only suggest upgrades up to this many levels above current, so the list
+  # stays actionable rather than aspirational.
+  max_levels_ahead: 4
+  # Ignore upgrades that add less than this weighted score.
+  min_weighted_gain: 5.0

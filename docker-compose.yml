@@ -1,0 +1,41 @@
+services:
+  aion2-tracker:
+    build: .
+    image: aion2-tracker:latest
+    container_name: aion2-tracker
+    restart: unless-stopped
+
+    # All configuration is env-driven so this same image runs locally and on
+    # Unraid with nothing but a different .env.
+    env_file:
+      - .env
+
+    ports:
+      # Host port 8080. Point the Cloudflare Tunnel at this.
+      - "8080:8080"
+
+    volumes:
+      # Local dev writes to ./data. On Unraid override this to
+      # /mnt/user/appdata/aion2-tracker:/data
+      - ./data:/data
+      # Edit thresholds without rebuilding the image.
+      - ./config:/app/config:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.request,sys
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=8).status==200 else 1)
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
