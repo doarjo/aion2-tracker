@@ -85,6 +85,10 @@ class Item:
     category: str = ""
     magic_stone_slots: int = 0
     god_stone_slots: int = 0
+    #: Percent, 0-100. NOT always 100 -- our Ranger's bow reads 13.3. Two
+    #: earlier sample characters happened to be fully bound, which is why
+    #: this was first recorded as a constant.
+    soul_bind_rate: float = 100.0
     main_stats: list[StatLine] = field(default_factory=list)
     sub_stats: list[StatLine] = field(default_factory=list)
     stones: list[StatLine] = field(default_factory=list)
@@ -149,6 +153,7 @@ class Item:
             category=payload.get("categoryName", ""),
             magic_stone_slots=int(payload.get("magicStoneSlotCount") or 0),
             god_stone_slots=int(payload.get("godStoneSlotCount") or 0),
+            soul_bind_rate=_num(payload.get("soulBindRate", 100)),
             main_stats=lines("mainStats", "main"),
             sub_stats=lines("subStats", "sub"),
             stones=lines("magicStoneStat", "stone"),
@@ -168,6 +173,11 @@ class Item:
 # --------------------------------------------------------------------------
 
 
+#: Highest base level observed on any skill. Deadshot and Vaizel's Authority
+#: both sit here, and nothing exceeds it, so treat it as the cap.
+SKILL_LEVEL_CAP = 20
+
+
 @dataclass(slots=True)
 class Skill:
     name: str
@@ -175,6 +185,8 @@ class Skill:
     base_level: int
     daevanion_bonus: int = 0
     arcana_bonus: int = 0
+    acquired: bool = True
+    equipped: bool = False
 
     @property
     def effective_level(self) -> int:
@@ -183,6 +195,23 @@ class Skill:
     @property
     def is_stigma(self) -> bool:
         return self.category == "Dp"
+
+    @property
+    def in_use(self) -> bool:
+        """Does this skill currently do anything?
+
+        Passives report equip=0 across the board, so they count as in use once
+        acquired. Actives and stigmas must actually be slotted.
+        """
+        if not self.acquired:
+            return False
+        if self.category == "Passive":
+            return True
+        return self.equipped
+
+    @property
+    def levels_to_cap(self) -> int:
+        return max(0, SKILL_LEVEL_CAP - self.base_level)
 
 
 _EFFECT = re.compile(r"^(?P<name>.+?)\s*\+(?P<amount>\d+(?:\.\d+)?)\s*(?P<pct>%?)$")
@@ -354,6 +383,8 @@ def build_character(
                 base_level=int(s.get("skillLevel") or 0),
                 daevanion_bonus=daev.get(nm, 0),
                 arcana_bonus=arcana.get(nm, 0),
+                acquired=bool(s.get("acquired")),
+                equipped=bool(s.get("equip")),
             )
         )
 

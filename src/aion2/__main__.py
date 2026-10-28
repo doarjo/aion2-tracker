@@ -17,6 +17,20 @@ from .replay import from_payloads, load_capture
 log = logging.getLogger("aion2")
 
 
+def _force_utf8_output() -> None:
+    """Windows consoles default to cp1252, which raises UnicodeEncodeError on
+    the arrows and bullets in recommendation titles. Linux and macOS are
+    already UTF-8, so this is a no-op there."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - exotic terminals
+            pass
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -309,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     args = build_parser().parse_args(argv)
     _setup_logging(args.verbose)
     try:

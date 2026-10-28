@@ -22,7 +22,7 @@ from typing import Any, Iterable
 import yaml
 
 from . import stats as S
-from .models import Character, Item, StatLine
+from .models import SKILL_LEVEL_CAP, Character, Item, StatLine
 from .paths import candidate_config_dirs, find_config_file
 
 log = logging.getLogger(__name__)
@@ -451,6 +451,158 @@ class Engine:
                 )
         return out
 
+    def skill_levels(self, char: Character) -> list[Recommendation]:
+        """Every in-use skill below the level cap.
+
+        Distinct from skill_targets, which only checks the handful named in
+        the thresholds file. This catches the rest, which is what you actually
+        want when the question is "get my skills to 20".
+        """
+        cfg = self.cfg.get("skills") or {}
+        cap = int(cfg.get("level_cap", SKILL_LEVEL_CAP))
+        min_gap = int(cfg.get("min_gap_to_report", 1))
+
+        out: list[Recommendation] = []
+
+        # --- in-use skills below cap, grouped by category -----------------
+        for category, label in (("Active", "active"), ("Dp", "stigma"),
+                                ("Passive", "passive")):
+            below = [
+                s for s in char.skills
+                if s.category == category and s.in_use
+                and (cap - s.base_level) >= min_gap
+            ]
+            if not below:
+                continue
+            below.sort(key=lambda s: s.base_level)
+
+            total_levels = sum(cap - s.base_level for s in below)
+            worst = below[:4]
+            listing = ", ".join(
+                f"{s.name} {s.base_level}/{cap}" for s in worst
+            )
+            if len(below) > 4:
+                listing += f", +{len(below) - 4} more"
+
+            out.append(
+                Recommendation(
+                    category="skill",
+                    title=(
+                        f"{total_levels} {_plural(total_levels, 'level')} of "
+                        f"{label} skill training left"
+                    ),
+                    detail=(
+                        f"{len(below)} {label} "
+                        f"{_plural(len(below), 'skill')} below {cap}: {listing}."
+                    ),
+                    priority=(
+                        Priority.HIGH if category in ("Active", "Dp")
+                        and total_levels >= 20 else Priority.MEDIUM
+                    ),
+                    score=float(total_levels) * (
+                        2.0 if category in ("Active", "Dp") else 1.0
+                    ),
+                )
+            )
+
+        # --- stigmas that are learned but not slotted ---------------------
+        idle = [
+            s for s in char.skills
+            if s.is_stigma and s.acquired and not s.equipped
+        ]
+        if idle:
+            out.append(
+                Recommendation(
+                    category="skill",
+                    title=f"{len(idle)} learned {_plural(len(idle), 'stigma')} not slotted",
+                    detail=(
+                        f"{', '.join(s.name for s in idle)}. "
+                        f"Learned but contributing nothing while unequipped."
+                    ),
+                    priority=Priority.MEDIUM,
+                    score=float(len(idle)) * 8.0,
+                )
+            )
+
+        # --- stigmas never learned ----------------------------------------
+        unlearned = [s for s in char.skills if s.is_stigma and not s.acquired]
+        if unlearned:
+            out.append(
+                Recommendation(
+                    category="skill",
+                    title=f"{len(unlearned)} {_plural(len(unlearned), 'stigma')} not yet learned",
+                    detail=", ".join(s.name for s in unlearned) + ".",
+                    priority=Priority.LOW,
+                    score=float(len(unlearned)) * 2.0,
+                )
+            )
+
+        return out
+
+    def soul_binding(self, char: Character) -> list[Recommendation]:
+        """Items well short of fully soul bound.
+
+        What soul binding does mechanically is not published, and there is no
+        way to ask PLAYNC "what would this item look like at 100". So this
+        reports completion, like Daevanion progress, and deliberately claims
+        no stat gain.
+        """
+        cfg = self.cfg.get("soul_binding") or {}
+        threshold = float(cfg.get("flag_below_percent", 90))
+
+        low = [
+            it for it in char.items
+            if it.soul_bind_rate < threshold
+        ]
+        if not low:
+            return []
+
+        low.sort(key=lambda it: it.soul_bind_rate)
+        out: list[Recommendation] = []
+
+        # The weapon matters most, so call it out on its own.
+        weapon = next((it for it in low if it.slot_pos == 1), None)
+        if weapon:
+            out.append(
+                Recommendation(
+                    category="soulbind",
+                    title=(
+                        f"{weapon.name} is only "
+                        f"{weapon.soul_bind_rate:g}% soul bound"
+                    ),
+                    detail=(
+                        "Your weapon is the highest-leverage slot to finish "
+                        "binding."
+                    ),
+                    priority=Priority.HIGH,
+                    score=(100.0 - weapon.soul_bind_rate) * 0.9,
+                    slot_name=weapon.slot_name,
+                    item_name=weapon.name,
+                )
+            )
+
+        rest = [it for it in low if it.slot_pos != 1]
+        if rest:
+            avg = sum(it.soul_bind_rate for it in rest) / len(rest)
+            listing = ", ".join(
+                f"{it.name} {it.soul_bind_rate:g}%" for it in rest[:4]
+            )
+            if len(rest) > 4:
+                listing += f", +{len(rest) - 4} more"
+            out.append(
+                Recommendation(
+                    category="soulbind",
+                    title=(
+                        f"{len(rest)} other {_plural(len(rest), 'item')} "
+                        f"below {threshold:g}% soul bound"
+                    ),
+                    detail=f"Lowest first: {listing}. Average {avg:.0f}%.",
+                    priority=Priority.MEDIUM,
+                    score=(100.0 - avg) * 0.4,
+                )
+            )
+        return out
+
     def attribute_checks(self, char: Character) -> list[Recommendation]:
         out = []
         attrs = self.cfg.get("attributes") or {}
@@ -621,6 +773,8 @@ class Engine:
         recs.append(self.accuracy_summary(char))
 
         recs += self.enhancement_upgrades(char)
+        recs += self.skill_levels(char)
+        recs += self.soul_binding(char)
         recs += self.empty_stone_slots(char)
         recs += self.manastone_swaps(char)
         recs += self.skill_targets(char)
