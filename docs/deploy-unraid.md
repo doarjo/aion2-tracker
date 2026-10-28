@@ -37,6 +37,28 @@ checkout, so there is no separate config directory to keep in sync.
 
 The repo is **private**, so cloning needs credentials. Pick one:
 
+**Option 0 — make the repo public for a few minutes (fastest)**
+
+Flip the repo to public, run the bootstrap script, flip it back:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/doarjo/aion2-tracker/main/deploy/bootstrap-unraid.sh | bash
+```
+
+That script does everything in step 1: preflight checks, clone, `.env`, build,
+start, health check and first snapshot. Then set the repo private again.
+
+Two things to accept before choosing this:
+
+* **A public window is effectively permanent.** GitHub's public events feed is
+  scraped continuously and repos get mirrored within seconds. For this repo the
+  impact is low — no secrets, no personal email in the commit metadata, and the
+  only identifying content is a character id readable from the official armory
+  — but you cannot un-publish.
+* **`git pull` stops working** once it is private again, so every future update
+  means repeating the flip. If you expect to iterate, use option A or B below
+  instead.
+
 **Option A — clone with a Personal Access Token (simplest)**
 
 Create a fine-grained PAT at <https://github.com/settings/tokens> with
