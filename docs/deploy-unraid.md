@@ -218,14 +218,69 @@ changes or keep a copy.
 
 ---
 
-## Step 2 — Cloudflare Tunnel (optional, external access only)
+## Step 2 — External access via Cloudflare Tunnel
 
-Skip this entirely if LAN access is enough.
+Only needed to reach the dashboard from outside your network. Skip it if LAN
+access is enough.
 
-### 2a. Add the route
+**Order matters here.** Create the Access policy *before* the public hostname,
+or there is a window where the dashboard is on the open internet with no login.
 
-In the Cloudflare Zero Trust dashboard, under **Networks → Tunnels**, pick the
-tunnel already running on your Unraid box and add a public hostname:
+### 2a. Find out what tunnel you already have
+
+Run on Tower:
+
+```bash
+echo "--- cloudflared containers ---"
+docker ps -a --filter name=cloudflare --format '{{.Names}}\t{{.Image}}\t{{.Status}}'
+echo "--- host process ---"
+pgrep -a cloudflared || echo "none"
+echo "--- config on appdata ---"
+ls -la /mnt/user/appdata/cloudflared/ 2>/dev/null || echo "no /mnt/user/appdata/cloudflared"
+echo "--- run args (shows token vs config file) ---"
+docker inspect $(docker ps -q --filter name=cloudflare) \
+  --format '{{.Name}}{{range .Config.Cmd}} {{.}}{{end}}' 2>/dev/null || true
+```
+
+The result puts you in one of three cases.
+
+| What you see | Case |
+|---|---|
+| A running container whose command contains `--token` | **A — dashboard-managed tunnel** |
+| A running container pointing at a `config.yml` | **B — locally-managed tunnel** |
+| Nothing | **C — no tunnel yet** |
+
+### 2b. Create the Access application FIRST
+
+Cloudflare Zero Trust → **Access → Applications → Add an application →
+Self-hosted**.
+
+| Field | Value |
+|---|---|
+| Application name | `AION 2 Tracker` |
+| Session duration | 1 month, or whatever suits |
+| Subdomain | `aion2` |
+| Domain | `23nit.com` |
+
+Then add a policy:
+
+| Field | Value |
+|---|---|
+| Policy name | `Me only` |
+| Action | `Allow` |
+| Include | `Emails` → your own email address |
+
+Save. Cloudflare now requires a login for that hostname even before the
+hostname exists, which is exactly the ordering you want.
+
+The free Zero Trust plan covers up to 50 users, so this costs nothing.
+
+### 2c. Publish the hostname
+
+**Case A — dashboard-managed tunnel**
+
+Zero Trust → **Networks → Tunnels** → your tunnel → **Public Hostnames** →
+**Add a public hostname**:
 
 | Field | Value |
 |---|---|
@@ -234,38 +289,79 @@ tunnel already running on your Unraid box and add a public hostname:
 | Type | `HTTP` |
 | URL | `192.168.100.30:8080` |
 
-Cloudflare creates the DNS record for you. Do not create the `aion2` DNS
-record by hand first; the tunnel route manages it.
+Cloudflare creates the DNS record itself. **Do not pre-create an `aion2` DNS
+record** — the tunnel route manages it and a manual record conflicts.
 
-Type is **HTTP**, not HTTPS. The app serves plain HTTP and the tunnel provides
-TLS at Cloudflare's edge.
+Type is **HTTP**, not HTTPS. The container serves plain HTTP; TLS terminates at
+Cloudflare's edge.
 
-### 2b. Put Cloudflare Access in front of it
+If cloudflared runs on Unraid itself, `localhost:8080` also works and saves a
+hop. Use the explicit IP if the tunnel runs on a different box.
 
-The dashboard has **no authentication of its own**. Anyone who reaches the URL
-sees it. Without Access, `aion2.23nit.com` is public to the internet.
+**Case B — locally-managed tunnel**
 
-Under **Access → Applications**, add a self-hosted application for
-`aion2.23nit.com` with a policy allowing your own email. That gives you a login
-page in front of the dashboard.
+Add an ingress rule to `config.yml`, above the catch-all:
 
-### 2c. A conflict to know about in advance
+```yaml
+ingress:
+  - hostname: aion2.23nit.com
+    service: http://192.168.100.30:8080
+  # ... your existing rules ...
+  - service: http_status:404          # catch-all stays last
+```
 
-Your original brief flagged this and it still holds. Cloudflare Access login
-pages **break** the claude.ai custom-connector flow, because the connector
-cannot complete an interactive browser login.
+Order matters: the first matching rule wins and the catch-all must stay at the
+bottom. Then create the DNS record and restart:
 
-This does not matter yet, since the MCP server is not built. When it is, the
-options are:
+```bash
+cloudflared tunnel route dns <TUNNEL_NAME> aion2.23nit.com
+docker restart cloudflared
+```
 
-1. Put Access on `/` and the dashboard only, leaving `/mcp` open with a bearer
-   token and a Cloudflare WAF rate-limit rule. The data is public game data, so
-   the exposure is low, but the endpoint is reachable by anyone who finds it.
+**Case C — no tunnel yet**
+
+Zero Trust → **Networks → Tunnels → Create a tunnel** → **Cloudflared**. Name
+it something like `tower`. Copy the token it gives you, then on Tower:
+
+```bash
+docker run -d --name cloudflared --restart unless-stopped \
+  --network host \
+  cloudflare/cloudflared:latest tunnel --no-autoupdate run --token <YOUR_TOKEN>
+```
+
+The token is a credential — treat it like a password and keep it out of git.
+Then follow case A to add the hostname.
+
+### 2d. Verify
+
+```bash
+# From Tower, confirm the app itself is still fine
+curl -s http://localhost:8080/health
+```
+
+Then from your phone on mobile data, with WiFi off, open
+<https://aion2.23nit.com>. You should get a **Cloudflare login page**, not the
+dashboard. If the dashboard loads without asking who you are, the Access policy
+is not attached — fix that before leaving it up.
+
+DNS propagation is usually seconds, but give it a couple of minutes.
+
+### 2e. The MCP conflict, for later
+
+Access login pages break the claude.ai custom-connector flow, because the
+connector cannot complete an interactive browser login. This does not bite yet,
+since the MCP server is not built.
+
+When it is, the options are:
+
+1. Add a **bypass policy** scoped to the `/mcp` path only, protected by its own
+   bearer token plus a Cloudflare rate-limit rule. Keeps Access on the
+   dashboard.
 2. Implement OAuth on the MCP server. More work, correct answer.
-3. Use the MCP server only from Claude Code over the LAN, and leave the whole
-   hostname behind Access.
+3. Use MCP only from Claude Code over the LAN and leave the whole hostname
+   behind Access.
 
-Decide that when the MCP server exists, not now.
+Decide when the MCP server exists, not now.
 
 ---
 
@@ -279,6 +375,11 @@ Decide that when the MCP server exists, not now.
 | Snapshot returns `429` | Cooldown. Add `?force=true` to `/refresh` or wait it out. |
 | Container healthy, dashboard empty | No snapshot yet. Run `docker exec aion2-tracker python -m aion2 snapshot`. |
 | Permission denied on `/data` | `chown -R 1000:1000 /mnt/user/appdata/aion2-tracker/data` — the container runs as uid 1000. |
+| `curl ... bootstrap-unraid.sh` gives 404 while the repo is public | `raw.githubusercontent.com` caches negative responses. Wait a minute, or fetch through the API: `curl -fsSL -H "Accept: application/vnd.github.raw" https://api.github.com/repos/doarjo/aion2-tracker/contents/deploy/bootstrap-unraid.sh \| bash` |
+| `aion2.23nit.com` shows Cloudflare error 1033 | Tunnel is down or the hostname is not routed. Check `docker logs cloudflared`. |
+| Error 502 through the tunnel | Tunnel reached Cloudflare but not the app. Check the ingress URL is `http://` and the port matches. |
+| Dashboard loads publicly with no login | Access policy is not attached to the hostname. Fix immediately — step 2b. |
+| Access login loops or rejects you | The policy's Include rule does not match your email. Check for a typo in Zero Trust → Access → Applications. |
 
 Logs:
 
