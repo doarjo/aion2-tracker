@@ -437,10 +437,14 @@
 {% endif %}
 
   <footer>
-    Public PLAYNC character endpoints · read-only, rate limited.<br>
+    Character data from the public PLAYNC endpoints · read-only, rate limited.<br>
+    {% if has_catalog %}Item roll pools courtesy of
+    <a href="https://shugo.gg" rel="noopener">Shugo.GG</a>, a fan-made AION 2
+    companion site.<br>{% endif %}
     Stat gains are exact values from PLAYNC. Ranking is a weighting heuristic:
     Combat Power itself is not calculable, so use
-    <code>aion2 history</code> to see what a change actually did.
+    <code>aion2 history</code> to see what a change actually did.<br>
+    Not affiliated with NCSOFT.
   </footer>
 </div>
 </body>

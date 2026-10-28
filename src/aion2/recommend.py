@@ -17,13 +17,16 @@ import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 import yaml
 
 from . import stats as S
 from .models import Character, Item, Skill, StatLine
 from .paths import candidate_config_dirs, find_config_file
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .shugo import CatalogItem, ShugoCatalog
 
 log = logging.getLogger(__name__)
 
@@ -694,6 +697,138 @@ class Engine:
 
         return out
 
+    def ideal_rolls(
+        self, item: Item, entry: "CatalogItem"
+    ) -> list[tuple[str, str, float]]:
+        """The highest-weighted stats this item is able to roll.
+
+        Returns (stat_id, display name, max value) for the best `capacity`
+        options in the pool, under the active goal profile.
+        """
+        scored = []
+        for opt in entry.roll_pool:
+            w = self.weight(opt.stat_id)
+            if w <= 0:
+                continue
+            value = opt.max_value * 10 if opt.percent else opt.max_value
+            scored.append((w * value, opt))
+        scored.sort(key=lambda pair: -pair[0])
+
+        capacity = item.slot_capacity or entry.sub_stat_slots
+        return [
+            (o.stat_id, o.name, o.max_value) for _s, o in scored[:capacity]
+        ]
+
+    def catalog_review(
+        self, char: Character, catalog: "ShugoCatalog"
+    ) -> list[Recommendation]:
+        """True best-in-slot, using the roll pool each item can actually produce.
+
+        PLAYNC publishes no catalog, so until now the engine could only
+        compare one equipped item against another. Shugo.GG publishes the pool
+        per item id, which turns "this stat is useless" into "this stat is
+        useless AND here is what the slot could hold instead".
+        """
+        out: list[Recommendation] = []
+        graded: list[tuple[float, Item, str]] = []
+
+        for item in char.items:
+            if not item.rerollable:
+                continue
+            entry = catalog.item(item.item_id)
+            if entry is None or not entry.roll_pool:
+                continue
+
+            ideal = self.ideal_rolls(item, entry)
+            if not ideal:
+                continue
+            ideal_ids = {sid for sid, _n, _v in ideal}
+            current_ids = {ln.stat_id for ln in item.sub_stats}
+
+            missing = [
+                (sid, name, val) for sid, name, val in ideal
+                if sid not in current_ids
+            ]
+            dead = [
+                ln for ln in item.sub_stats if self.weight(ln.stat_id) <= 0
+            ]
+
+            # Deliberately NOT reporting where a roll sits in its range.
+            # The pool's min/max describe the BASE item at +0, while equipped
+            # values are scaled by enhancement -- a ring whose pool caps
+            # Defense at 83 shows 218 at +11. Without the scaling factor the
+            # comparison reads 100% for almost everything, which is noise
+            # dressed as precision. Pool MEMBERSHIP is reliable; position
+            # within the range is not.
+
+            graded.append((
+                len(current_ids & ideal_ids) / max(1, len(ideal_ids)),
+                item,
+                entry.url,
+            ))
+
+            if not dead and not missing:
+                continue
+
+            want = ", ".join(f"{name}" for _sid, name, _v in missing[:3])
+            have = ", ".join(ln.label for ln in dead[:3])
+
+            detail_parts = []
+            if dead:
+                detail_parts.append(
+                    f"{len(dead)} of {item.slot_capacity} slots hold {have}, "
+                    f"worth nothing for {self.profile_label}."
+                )
+            if missing:
+                detail_parts.append(
+                    f"It can roll {want}, which it currently does not."
+                )
+            detail_parts.append(
+                f"{len(entry.roll_pool)} stats in its pool, via Shugo.GG."
+            )
+
+            score = 25.0 * len(dead) + 15.0 * len(missing)
+            out.append(
+                Recommendation(
+                    category="bis",
+                    title=(
+                        f"{item.name} ({item.slot_name}) could roll "
+                        f"{missing[0][1] if missing else 'better'}"
+                    ),
+                    detail=" ".join(detail_parts),
+                    priority=Priority.HIGH if score >= 60 else Priority.MEDIUM,
+                    score=score,
+                    slot_name=item.slot_name,
+                    item_name=item.name,
+                )
+            )
+
+        # One overview row: which slots are closest to and furthest from ideal.
+        if graded:
+            # Sort on the fraction only; Items are not orderable and the
+            # tuple comparison falls through to them on a tie.
+            graded.sort(key=lambda row: row[0])
+            worst = graded[:3]
+            best = graded[-1]
+            out.append(
+                Recommendation(
+                    category="bis",
+                    title="How close each slot is to its ideal roll",
+                    detail=(
+                        "Share of the best available stats actually rolled. "
+                        + ", ".join(
+                            f"{it.slot_name} {frac * 100:.0f}%"
+                            for frac, it, _u in worst
+                        )
+                        + f". Best is {best[1].slot_name} at "
+                        f"{best[0] * 100:.0f}%. Roll pools from Shugo.GG."
+                    ),
+                    priority=Priority.INFO,
+                    score=0.0,
+                )
+            )
+        return out
+
     def slot_value(self, item: Item) -> float:
         """Weighted worth of an item's rolled sub-stats under the active goal.
 
@@ -1106,9 +1241,15 @@ class Engine:
 
     # -- entry point -------------------------------------------------------
 
-    def audit(self, char: Character) -> list[Recommendation]:
-        """Full ranked audit. Entirely offline: enhancement figures come from
-        the headroom recorded at snapshot time."""
+    def audit(
+        self, char: Character, catalog: "ShugoCatalog | None" = None
+    ) -> list[Recommendation]:
+        """Full ranked audit.
+
+        Offline by default: enhancement figures come from the headroom
+        recorded at snapshot time. Pass a catalog to add true best-in-slot
+        using each item's real roll pool.
+        """
         recs: list[Recommendation] = []
 
         summary = self.enhancement_summary(char)
@@ -1120,6 +1261,8 @@ class Engine:
         recs += self.skill_levels(char)
         recs += self.skill_slots(char)
         recs += self.best_in_slot(char)
+        if catalog is not None:
+            recs += self.catalog_review(char, catalog)
         recs += self.soul_binding(char)
         recs += self.empty_stone_slots(char)
         recs += self.manastone_swaps(char)

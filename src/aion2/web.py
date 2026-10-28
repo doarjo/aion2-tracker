@@ -27,6 +27,7 @@ from .config import Settings, load_settings
 from .fetch import snapshot_payloads
 from .recommend import Engine, Recommendation, UnknownProfile, load_config
 from .replay import from_payloads
+from .shugo import ShugoCatalog
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     taken_at=None,
                     taken_ago="",
                     totals={},
+                    has_catalog=False,
                     key_skills=[],
                     skill_cap=20,
                     profiles=profiles,
@@ -136,7 +138,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
 
-        recs = eng.audit(char)
+        with ShugoCatalog(cfg.db_path, offline=True) as cat:
+            catalog = cat if cat.cached_count() else None
+            recs = eng.audit(char, catalog)
+            has_catalog = catalog is not None
         taken = row["taken_at"] if row else None
         return HTMLResponse(
             template.render(
@@ -148,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 taken_at=taken,
                 taken_ago=_humanise(taken),
                 totals=_totals(char, eng),
+                has_catalog=has_catalog,
                 key_skills=eng.key_skills(char),
                 skill_cap=int((eng.cfg.get("skills") or {}).get("level_cap", 20)),
                 profiles=profiles,
@@ -188,13 +194,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if char is None:
             raise HTTPException(404, "No snapshot yet. POST /refresh first.")
         eng = engine_for(profile)
-        return JSONResponse(
-            {
-                "profile": eng.profile,
-                "profile_label": eng.profile_label,
-                "recommendations": [rec_to_dict(r) for r in eng.audit(char)],
-            }
-        )
+        with ShugoCatalog(cfg.db_path, offline=True) as cat:
+            catalog = cat if cat.cached_count() else None
+            recs = eng.audit(char, catalog)
+            return JSONResponse(
+                {
+                    "profile": eng.profile,
+                    "profile_label": eng.profile_label,
+                    "catalog": bool(catalog),
+                    "recommendations": [rec_to_dict(r) for r in recs],
+                }
+            )
 
     @app.get("/api/history")
     def api_history(stat: str = "combat_power", days: int = 90) -> JSONResponse:

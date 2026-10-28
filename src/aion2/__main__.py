@@ -13,6 +13,7 @@ from .config import load_settings
 from .fetch import snapshot_payloads
 from .recommend import ConfigNotFound, Engine, UnknownProfile, load_config
 from .replay import from_payloads, load_capture
+from .shugo import ATTRIBUTION, ShugoCatalog
 
 log = logging.getLogger("aion2")
 
@@ -140,8 +141,8 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_audit(char, engine: Engine, limit: int | None) -> None:
-    recs = engine.audit(char)
+def _print_audit(char, engine: Engine, limit: int | None, catalog=None) -> None:
+    recs = engine.audit(char, catalog)
     print(f"\n{char.name} -- {char.class_name} {char.level}, "
           f"CP {char.combat_power:,}, item level {char.item_level:,}")
     print(f"Goal: {engine.profile_label}")
@@ -200,7 +201,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     char = from_payloads(json.loads(row["payload"] or "{}"))
     print(f"Snapshot taken {row['taken_at']}")
-    _print_audit(char, engine, None if args.all else 15)
+
+    # Offline: use whatever the catalog has already cached, never fetch
+    # during an audit. `aion2 catalog` is the explicit fetch step.
+    with ShugoCatalog(cfg.db_path, offline=True) as cat:
+        catalog = cat if cat.cached_count() else None
+        if catalog is None:
+            print("No item roll pools cached. Run 'aion2 catalog' to add them.")
+        _print_audit(char, engine, None if args.all else 15, catalog)
     return 0
 
 
@@ -209,6 +217,45 @@ def cmd_replay(args: argparse.Namespace) -> int:
     engine = Engine(load_config(args.thresholds), profile=args.profile)
     char = load_capture(args.directory)
     _print_audit(char, engine, None if args.all else 15)
+    return 0
+
+
+def cmd_catalog(args: argparse.Namespace) -> int:
+    """Fetch roll pools for equipped items from Shugo.GG.
+
+    Reads their server-rendered item pages, which their llms.txt explicitly
+    offers to agents. Never /api/, which their robots.txt disallows.
+    """
+    cfg = load_settings(args.env_file)
+    row = db.latest_snapshot(cfg.db_path, cfg.character_id or None)
+    if row is None:
+        print("No snapshot yet. Run 'aion2 snapshot' first.", file=sys.stderr)
+        return 1
+
+    import json as _json
+
+    char = from_payloads(_json.loads(row["payload"] or "{}"))
+    ids = sorted({it.item_id for it in char.items if it.item_id})
+
+    with ShugoCatalog(cfg.db_path, rate_limit_seconds=args.rate_limit) as cat:
+        have = cat.cached_count()
+        print(f"{len(ids)} equipped items, {have} already cached.")
+        if args.refresh:
+            print("Refreshing every entry.")
+            with db.connect(cfg.db_path) as conn:
+                conn.execute("DELETE FROM catalog_items")
+
+        def progress(_stage: str, done: int, total: int) -> None:
+            print(f"  fetching {done}/{total}", flush=True)
+
+        fetched = cat.warm(ids, progress=progress)
+        print(f"\nFetched {fetched} new. Cache now holds {cat.cached_count()}.")
+
+        missing = [i for i in ids if cat.item(i) is None]
+        if missing:
+            print(f"{len(missing)} not found on Shugo.GG: {missing}")
+
+    print(f"\n{ATTRIBUTION}. https://shugo.gg")
     return 0
 
 
@@ -304,6 +351,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_ = sub.add_parser("profiles", help="list the available goal profiles")
     p_.add_argument("--thresholds", default=None)
     p_.set_defaults(func=cmd_profiles)
+
+    cat_ = sub.add_parser(
+        "catalog",
+        help="fetch item roll pools from Shugo.GG for your equipped items",
+    )
+    cat_.add_argument("--refresh", action="store_true", help="re-fetch everything")
+    cat_.add_argument("--rate-limit", type=float, default=2.0)
+    cat_.set_defaults(func=cmd_catalog)
 
     h = sub.add_parser("history", help="how a tracked number moved over time")
     h.add_argument(
