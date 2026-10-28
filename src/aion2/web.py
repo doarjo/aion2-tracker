@@ -78,12 +78,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> JSONResponse:
+        # thresholds_loaded is reported because a missing config does not stop
+        # the service, it just quietly makes every recommendation worse.
         return JSONResponse(
             {
-                "status": "ok",
+                "status": "ok" if engine.has_config else "degraded",
                 "configured": cfg.configured,
                 "character": cfg.character_name or None,
                 "has_snapshot": db.latest_snapshot(cfg.db_path) is not None,
+                "thresholds_loaded": engine.has_config,
+                "thresholds_path": cfg.thresholds_path or None,
             }
         )
 

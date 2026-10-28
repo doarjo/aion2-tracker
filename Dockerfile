@@ -5,7 +5,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     AION2_DB_PATH=/data/aion2.db \
     AION2_HOST=0.0.0.0 \
-    AION2_PORT=8080
+    AION2_PORT=8080 \
+    # Pinned explicitly: the package is installed into site-packages, so
+    # package-relative path guessing does not find the repo's config dir.
+    AION2_CONFIG_DIR=/app/config \
+    AION2_PROJECT_ROOT=/app
 
 WORKDIR /app
 

@@ -13,8 +13,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .client import VALID_REGIONS, CharacterRef
+from .paths import find_config_file, project_root
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = project_root()
 
 
 def _env(name: str, default: str = "") -> str:
@@ -94,6 +95,8 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
     if path.exists():
         load_dotenv(path, override=False)
 
+    found = find_config_file("thresholds.yaml")
+
     return Settings(
         region=_env("AION2_REGION", "eu").lower(),
         server_id=_env_int("AION2_SERVER_ID", 0),
@@ -106,5 +109,7 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         host=_env("AION2_HOST", "0.0.0.0"),
         port=_env_int("AION2_PORT", 8080),
         mcp_auth_token=_env("MCP_AUTH_TOKEN"),
-        thresholds_path=_env("AION2_THRESHOLDS", str(PROJECT_ROOT / "config" / "thresholds.yaml")),
+        # Empty means "search the conventional locations" rather than a guess
+        # that may not exist. See paths.find_config_file.
+        thresholds_path=_env("AION2_THRESHOLDS") or str(found or ""),
     )

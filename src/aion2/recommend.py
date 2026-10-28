@@ -25,10 +25,17 @@ from . import stats as S
 from .client import Aion2Client, CharacterRef
 from .fetch import fetch_item_at_enchant
 from .models import Character, Item, StatLine
+from .paths import candidate_config_dirs, find_config_file
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "thresholds.yaml"
+class ConfigNotFound(RuntimeError):
+    """Raised when thresholds.yaml cannot be located.
+
+    Deliberately fatal. An empty config silently disables every stat weight,
+    which downgrades recommendations without any visible error -- exactly the
+    bug that shipped to the container on the first build.
+    """
 
 
 class Priority(IntEnum):
@@ -67,13 +74,44 @@ class Recommendation:
         )
 
 
-def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    p = Path(path) if path else DEFAULT_CONFIG
-    if not p.exists():
-        log.warning("thresholds file not found at %s, using built-in defaults", p)
-        return {}
+def load_config(path: str | Path | None = None, *, strict: bool = True) -> dict[str, Any]:
+    """Load thresholds.yaml.
+
+    Raises ConfigNotFound by default rather than returning an empty dict,
+    because a silently empty config produces plausible-looking but badly
+    ranked recommendations.
+    """
+    if path:
+        p = Path(path)
+        if not p.exists():
+            if strict:
+                raise ConfigNotFound(f"thresholds file not found: {p}")
+            log.warning("thresholds file not found at %s", p)
+            return {}
+    else:
+        found = find_config_file("thresholds.yaml")
+        if found is None:
+            searched = "\n  ".join(str(d) for d in candidate_config_dirs())
+            message = (
+                "Could not find config/thresholds.yaml. Searched:\n  "
+                f"{searched}\n"
+                "Set AION2_THRESHOLDS to the file, or AION2_CONFIG_DIR to its "
+                "directory."
+            )
+            if strict:
+                raise ConfigNotFound(message)
+            log.warning(message)
+            return {}
+        p = found
+
     with p.open(encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        loaded = yaml.safe_load(fh) or {}
+
+    if not loaded:
+        log.warning("thresholds file %s is empty", p)
+    else:
+        log.info("loaded thresholds from %s", p)
+    return loaded
 
 
 class Engine:
@@ -82,6 +120,19 @@ class Engine:
         self.weights: dict[str, float] = self.cfg.get("stat_weights") or {}
         wasted = self.cfg.get("wasted_stats")
         self.wasted_ids = frozenset(wasted) if wasted else S.WASTED_DPS_IDS
+
+        if not self.weights:
+            # Without weights every gain scores zero, so manastone swaps and
+            # enhancement upgrades are silently dropped or demoted. Say so.
+            log.error(
+                "No stat_weights loaded. Recommendations will be unranked and "
+                "manastone swaps suppressed. Check that config/thresholds.yaml "
+                "is readable."
+            )
+
+    @property
+    def has_config(self) -> bool:
+        return bool(self.weights)
 
     # -- scoring -----------------------------------------------------------
 
