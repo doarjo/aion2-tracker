@@ -70,10 +70,19 @@ aion2 replay captures/epitet --all
 docker compose up -d --build
 ```
 
-Local data lands in `./data`. On Unraid, change the volume to
-`/mnt/user/appdata/aion2-tracker:/data` and point your Cloudflare Tunnel at the
-published port. Configuration is entirely env-driven, so the same image runs in
-both places.
+Local data lands in `./data`. Configuration is entirely env-driven, so the same
+image runs anywhere.
+
+For Unraid, layer the override on top:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/unraid.override.yml up -d --build
+```
+
+Full walkthrough including the Cloudflare Tunnel in
+[docs/deploy-unraid.md](docs/deploy-unraid.md). Short version: you do **not**
+need a Cloudflare subdomain to run it, only to reach it from outside your
+network.
 
 ---
 

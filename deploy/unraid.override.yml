@@ -1,0 +1,29 @@
+# Unraid overrides, layered on top of the repo-root docker-compose.yml.
+#
+# Run it from the repo root so the project directory stays there, which is what
+# makes .env and ./config resolve naturally:
+#
+#   cd /mnt/user/appdata/aion2-tracker/src
+#   docker compose -f docker-compose.yml -f deploy/unraid.override.yml up -d --build
+#
+# Only two things actually differ from local development: the database lives on
+# the appdata share instead of ./data, and the container gets Unraid's WebUI
+# labels. Everything else is inherited, because configuration is env-driven.
+
+services:
+  aion2-tracker:
+    volumes:
+      # Overrides the base file's ./data mapping. Snapshots live on the array
+      # so they survive container rebuilds and Unraid reboots.
+      - /mnt/user/appdata/aion2-tracker/data:/data
+      # Thresholds come straight from the checkout, so `git pull` updates them.
+      # Edit in place on the server if you want to retune without a pull.
+      - ./config:/app/config:ro
+
+    environment:
+      - TZ=Europe/Bucharest
+
+    labels:
+      # Puts a working WebUI link on Unraid's Docker tab.
+      net.unraid.docker.managed: "composeman"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8080]/"
