@@ -1,34 +1,120 @@
-# Tunable targets for the build audit.
+# Tunable targets and weights for the build audit.
 #
-# These are COMMUNITY ESTIMATES, not official values. Change them freely --
-# nothing in the engine hardcodes a number from this file.
+# Values here are COMMUNITY ESTIMATES and heuristics, not official numbers.
+# Nothing in the engine hardcodes anything from this file -- change freely.
 
 class: Ranger
 content: PvE
 
+# Which weighting to use when no --profile is given.
+default_profile: combat_power
+
+# ---------------------------------------------------------------------------
+# Goal profiles
+# ---------------------------------------------------------------------------
+# IMPORTANT HONESTY NOTE: PLAYNC publishes combatPower as a single number for
+# your CURRENT state only. There is no endpoint that answers "what would my CP
+# be if...". The formula behind it is not published either.
+#
+# So these weights are a RANKING HEURISTIC, not a CP calculation. They express
+# "how much is one point of this stat worth toward this goal", scaled so that
+# stats which arrive in large numbers (HP) do not drown out stats which arrive
+# in small ones (Attack). The engine never claims a CP delta.
+#
+# The honest CP measurement is empirical: snapshots record combatPower over
+# time, so once you act on a recommendation the next snapshot shows what it
+# actually did. See `aion2 history`.
+
+profiles:
+
+  combat_power:
+    label: Combat Power
+    description: >
+      Balanced offence and defence, for raising the headline Combat Power
+      number. Weights both damage and survivability, since CP counts both.
+    stat_weights:
+      # offence
+      WeaponFixingDamage: 2.0      # Attack
+      DefensePierce: 1.2           # Penetration
+      Critical: 1.2
+      WeaponAccuracy: 1.0
+      Accuracy: 1.0
+      AmplifyAllDamage: 2.5
+      AmplifyWeaponDamage: 2.5
+      PvEAmplifyDamage: 2.5
+      AdditionalHitRate: 1.0
+      Perfect: 1.0
+      SealStoneAddDamage: 0.5
+      # attributes
+      AGI: 2.0                     # Precision
+      STR: 1.5                     # Might
+      CON: 1.0                     # Constitution
+      # defence -- real CP contribution, but low per-point because the raw
+      # numbers are large
+      ArmorDefense: 0.35
+      HPMax: 0.08
+      MPMax: 0.02
+      CriticalDamageDefense: 0.1
+      PvEDecreaseDamage: 1.0
+      # utility
+      CombatSpeed: 1.5
+      Restoration: 0.1
+
+  pve_dps:
+    label: PvE Damage
+    description: >
+      Damage only. Defence and survivability score zero, so anything
+      defensive reads as wasted budget. Use when gear is already comfortable
+      and you want to push throughput.
+    stat_weights:
+      WeaponAccuracy: 3.0
+      Accuracy: 3.0
+      Critical: 1.5
+      WeaponFixingDamage: 1.2
+      DefensePierce: 1.0
+      AmplifyWeaponDamage: 2.0
+      AmplifyAllDamage: 2.0
+      PvEAmplifyDamage: 2.0
+      AdditionalHitRate: 1.0
+      Perfect: 1.0
+      AGI: 2.5
+      STR: 0.8
+
+  accuracy_rush:
+    label: Accuracy Rush
+    description: >
+      Everything subordinated to hitting the raid accuracy floor. Use while
+      Accuracy is the binding constraint, then switch away.
+    stat_weights:
+      WeaponAccuracy: 10.0
+      Accuracy: 10.0
+      AGI: 4.0
+      Critical: 0.5
+      WeaponFixingDamage: 0.5
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+
 accuracy:
   # In-game Accuracy targets. The API cannot read your in-game total (see
-  # docs/endpoints.md section 4), so these are compared against the figure you
-  # record in config/manual.yaml, not against a computed number.
+  # docs/endpoints.md section 4), so these are for your own reference against
+  # the figure you read in game.
   target_min: 1100
   target_max: 1200
   raid_target: 1450
-
-  # Flat Accuracy readable from gear alone. Used for trend tracking and for
-  # measuring how much a recommendation actually gains you.
-  gear_warn_below: 400
+  # Flat Accuracy readable from gear. Trend-tracking only.
+  gear_warn_below: 250
 
 critical_hit:
-  # Marking Shot adds a flat 300 on top.
-  marking_shot_bonus: 300
+  marking_shot_bonus: 300      # Marking Shot adds a flat 300
   cap_target_percent: 50
 
 attributes:
   # Precision (AGI) drives Accuracy and Critical Hit for a Ranger.
-  # Dexterity (DEX) drives Evasion, Block and Crit Resist -- defensive, wasted.
+  # Dexterity (DEX) drives Evasion, Block and Crit Resist -- defensive.
   flag_dexterity_above_precision: true
 
-# Skills worth checking, by effective level (listed + Daevanion + Arcana).
 skill_targets:
   Deadshot: 20
   Gale Arrow: 20
@@ -38,39 +124,25 @@ skill_targets:
   Vaizel's Authority: 20
 
 # Stats that do nothing for Ranger PvE damage. Flagged as reroll or replace
-# candidates when they appear on a rolled sub-stat or a manastone.
-# Stat ids, not display names. See src/aion2/stats.py for the vocabulary.
+# candidates on rolled sub-stats and manastones. Stat ids, not display names.
+#
+# Note these stay "wasted" even under the combat_power profile: a manastone
+# slot is a fixed budget, so filling it with Block instead of Attack is a
+# straight loss regardless of goal.
 wasted_stats:
   - DEX
   - Evasion
   - ArmorEvasion
   - Block
-  - ArmorDefense
   - CriticalResist
-  - CriticalDamageDefense
   - FrontAttackDefense
   - PvPDamageDefense
 
-# How much one point of each stat is worth when ranking recommendations.
-# Accuracy is weighted hardest because it is the current bottleneck. Retune
-# once Accuracy is on target.
-stat_weights:
-  WeaponAccuracy: 3.0
-  Accuracy: 3.0
-  Critical: 1.5
-  WeaponFixingDamage: 1.2
-  DefensePierce: 1.0
-  AmplifyWeaponDamage: 2.0
-  AmplifyAllDamage: 2.0
-  PvEAmplifyDamage: 2.0
-  AdditionalHitRate: 1.0
-  Perfect: 1.0
-  AGI: 2.5
-  STR: 0.8
-
 enhancement:
-  # Only suggest upgrades up to this many levels above current, so the list
-  # stays actionable rather than aspirational.
-  max_levels_ahead: 4
-  # Ignore upgrades that add less than this weighted score.
+  # Cap how far ahead to suggest, so the list stays actionable.
+  max_levels_ahead: 10
+  # Ignore upgrades below this weighted score.
   min_weighted_gain: 5.0
+  # Fetch headroom during snapshot. Costs one extra request per item, which
+  # roughly doubles snapshot time, but makes the audit fully offline after.
+  scan_on_snapshot: true

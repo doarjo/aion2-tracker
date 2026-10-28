@@ -86,26 +86,105 @@ def fetch_item_at_enchant(
     return Item.parse(payload, item.slot_pos, item.slot_name)
 
 
+def scan_enhancement_headroom(
+    client: Aion2Client,
+    ref: CharacterRef,
+    items: list[Item],
+    *,
+    progress: Progress | None = None,
+) -> dict[str, dict[str, float]]:
+    """Exact main-stat gain from taking each item to its enchant cap.
+
+    One request per upgradeable item. PLAYNC recalculates for any level in
+    range, including levels not yet reached, so these are real values rather
+    than estimates.
+
+    Returns {slot_pos: {stat_id: delta}}. Items already at cap, or whose cap
+    cannot be queried, are omitted.
+    """
+    out: dict[str, dict[str, float]] = {}
+    upgradeable = [i for i in items if i.enchant_level < i.max_enchant_level]
+
+    for n, item in enumerate(upgradeable, start=1):
+        try:
+            capped = fetch_item_at_enchant(client, ref, item, item.max_enchant_level)
+        except Exception as exc:  # noqa: BLE001
+            # Some items report a maxEnchantLevel that 404s when queried.
+            # Record nothing rather than guessing.
+            log.warning(
+                "enhancement scan failed for %s at +%d: %s",
+                item.name, item.max_enchant_level, exc,
+            )
+            continue
+
+        gains: dict[str, float] = {}
+        for new in capped.main_stats:
+            old = next(
+                (m.value for m in item.main_stats if m.stat_id == new.stat_id), 0.0
+            )
+            delta = new.value - old
+            if delta > 0:
+                gains[new.stat_id] = delta
+        if gains:
+            out[str(item.slot_pos)] = gains
+
+        if progress:
+            progress("enhancement", n, len(upgradeable))
+
+    return out
+
+
 def snapshot_payloads(
-    client: Aion2Client, ref: CharacterRef
+    client: Aion2Client,
+    ref: CharacterRef,
+    *,
+    scan_enhancements: bool = True,
+    progress: Progress | None = None,
 ) -> dict[str, Any]:
     """Raw payloads, for archiving alongside a parsed snapshot so a future
-    parser change can be replayed against real historical data."""
+    parser change can be replayed against real historical data.
+
+    With `scan_enhancements` the snapshot also records exact enhancement
+    headroom per item. That roughly doubles the request count, but means the
+    audit never needs the network afterwards.
+    """
     info = client.info(ref)
     equipment = client.equipment(ref)
     slots = (equipment.get("equipment") or {}).get("equipmentList") or []
 
     items = {}
-    for entry in slots:
+    parsed: list[Item] = []
+    for n, entry in enumerate(slots, start=1):
         sp = int(entry.get("slotPos") or 0)
-        items[str(sp)] = client.item(
+        payload = client.item(
             ref, int(entry.get("id") or 0), int(entry.get("enchantLevel") or 0), sp
         )
+        items[str(sp)] = payload
+        parsed.append(Item.parse(payload, sp, entry.get("slotPosName", f"slot{sp}")))
+        if progress:
+            progress("items", n, len(slots))
 
     boards = {}
-    for b in (info.get("daevanion") or {}).get("boardList") or []:
-        if b.get("open") == 1:
-            bid = int(b.get("id") or 0)
-            boards[str(bid)] = client.daevanion(ref, bid)
+    summaries = [
+        b for b in ((info.get("daevanion") or {}).get("boardList") or [])
+        if b.get("open") == 1
+    ]
+    for n, b in enumerate(summaries, start=1):
+        bid = int(b.get("id") or 0)
+        boards[str(bid)] = client.daevanion(ref, bid)
+        if progress:
+            progress("boards", n, len(summaries))
 
-    return {"info": info, "equipment": equipment, "items": items, "boards": boards}
+    payloads: dict[str, Any] = {
+        "info": info,
+        "equipment": equipment,
+        "items": items,
+        "boards": boards,
+    }
+
+    if scan_enhancements:
+        payloads["enhancement_headroom"] = scan_enhancement_headroom(
+            client, ref, parsed, progress=progress
+        )
+
+    return payloads

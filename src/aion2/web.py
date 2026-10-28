@@ -22,7 +22,7 @@ from . import db
 from .client import Aion2Client
 from .config import Settings, load_settings
 from .fetch import snapshot_payloads
-from .recommend import Engine, Recommendation, load_config
+from .recommend import Engine, Recommendation, UnknownProfile, load_config
 from .replay import from_payloads
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,19 @@ _refresh_lock = threading.Lock()
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or load_settings()
     app = FastAPI(title="AION 2 Tracker", docs_url=None, redoc_url=None)
-    engine = Engine(load_config(cfg.thresholds_path or None))
+    thresholds = load_config(cfg.thresholds_path or None, strict=False)
+    engine = Engine(thresholds)
+    profiles = Engine.available_profiles(thresholds)
+
+    def engine_for(profile: str | None) -> Engine:
+        """Engines are cheap; build one per request when a profile is asked
+        for, so switching goals needs no restart."""
+        if not profile or profile == engine.profile:
+            return engine
+        try:
+            return Engine(thresholds, profile=profile)
+        except UnknownProfile as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     # -- helpers -----------------------------------------------------------
 
@@ -92,9 +104,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard() -> HTMLResponse:
+    def dashboard(profile: str | None = None) -> HTMLResponse:
         char, row = load_latest()
         template = _jinja.get_template("dashboard.html")
+        eng = engine_for(profile)
 
         if char is None:
             return HTMLResponse(
@@ -105,10 +118,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     recommendations=[],
                     taken_at=None,
                     totals={},
+                    profiles=profiles,
+                    active_profile=eng.profile,
+                    active_label=eng.profile_label,
                 )
             )
 
-        recs = engine.audit(char)
+        recs = eng.audit(char)
         return HTMLResponse(
             template.render(
                 character=char,
@@ -116,7 +132,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 problems=cfg.validate(),
                 recommendations=recs,
                 taken_at=row["taken_at"] if row else None,
-                totals=_totals(char, engine),
+                totals=_totals(char, eng),
+                profiles=profiles,
+                active_profile=eng.profile,
+                active_label=eng.profile_label,
             )
         )
 
@@ -142,12 +161,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/api/profiles")
+    def api_profiles() -> JSONResponse:
+        return JSONResponse({"active": engine.profile, "available": profiles})
+
     @app.get("/api/recommendations")
-    def api_recommendations() -> JSONResponse:
+    def api_recommendations(profile: str | None = None) -> JSONResponse:
         char, _row = load_latest()
         if char is None:
             raise HTTPException(404, "No snapshot yet. POST /refresh first.")
-        return JSONResponse([rec_to_dict(r) for r in engine.audit(char)])
+        eng = engine_for(profile)
+        return JSONResponse(
+            {
+                "profile": eng.profile,
+                "profile_label": eng.profile_label,
+                "recommendations": [rec_to_dict(r) for r in eng.audit(char)],
+            }
+        )
 
     @app.get("/api/history")
     def api_history(stat: str = "combat_power", days: int = 90) -> JSONResponse:
@@ -189,6 +219,9 @@ def _totals(char: Any, engine: Engine) -> dict[str, Any]:
     wasted_stones = sum(
         1 for it in char.items for st in it.stones if engine.is_wasted(st.stat_id)
     )
+    enh_totals = char.total_enhancement_gain()
+    top_enh = sorted(enh_totals.items(), key=lambda kv: -kv[1])[:3]
+
     return {
         "gear_accuracy": char.gear_accuracy,
         "wasted_total": len(wasted),
@@ -197,14 +230,23 @@ def _totals(char: Any, engine: Engine) -> dict[str, Any]:
         "accuracy_headroom": engine._accuracy_headroom(char),  # noqa: SLF001
         "items": len(char.items),
         "stigmas": sum(1 for s in char.skills if s.is_stigma),
+        "has_enhancement": char.has_enhancement_data,
+        "enh_levels": char.enhancement_levels_available,
+        "enh_top": top_enh,
     }
 
 
-def run_snapshot(cfg: Settings) -> int:
-    """Fetch and store one snapshot. Blocking and rate limited."""
+def run_snapshot(cfg: Settings, *, scan_enhancements: bool = True) -> int:
+    """Fetch and store one snapshot. Blocking and rate limited.
+
+    With the enhancement scan this is roughly 60 requests, so about four
+    minutes at the default spacing.
+    """
     ref = cfg.ref()
     with Aion2Client(rate_limit_seconds=cfg.rate_limit_seconds) as client:
-        payloads = snapshot_payloads(client, ref)
+        payloads = snapshot_payloads(
+            client, ref, scan_enhancements=scan_enhancements
+        )
     char = from_payloads(payloads)
     return db.save_snapshot(
         cfg.db_path,

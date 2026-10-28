@@ -11,7 +11,7 @@ from . import db
 from .client import Aion2Client, Aion2Error
 from .config import load_settings
 from .fetch import snapshot_payloads
-from .recommend import Engine, load_config
+from .recommend import ConfigNotFound, Engine, UnknownProfile, load_config
 from .replay import from_payloads, load_capture
 
 log = logging.getLogger("aion2")
@@ -74,11 +74,34 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             )
             return 1
 
+    thresholds = load_config(cfg.thresholds_path or None, strict=False)
+    scan = bool((thresholds.get("enhancement") or {}).get("scan_on_snapshot", True))
+    if args.no_enhancements:
+        scan = False
+
+    est = 60 if scan else 32
     print(f"Snapshotting {cfg.character_name or ref.character_id} ...")
-    print(f"About 30 requests at {cfg.rate_limit_seconds}s spacing, so ~2 minutes.")
+    print(
+        f"About {est} requests at {cfg.rate_limit_seconds}s spacing, "
+        f"so roughly {int(est * cfg.rate_limit_seconds / 60) + 1} minutes."
+    )
+    if scan:
+        print("Includes an enhancement scan, which makes later audits offline.")
+
+    last_stage = ""
+
+    def progress(stage: str, done: int, total: int) -> None:
+        nonlocal last_stage
+        if stage != last_stage:
+            print(f"  {stage} ...", flush=True)
+            last_stage = stage
+        if done == total:
+            print(f"    {done}/{total} done", flush=True)
 
     with Aion2Client(rate_limit_seconds=cfg.rate_limit_seconds) as client:
-        payloads = snapshot_payloads(client, ref)
+        payloads = snapshot_payloads(
+            client, ref, scan_enhancements=scan, progress=progress
+        )
 
     char = from_payloads(payloads)
     snapshot_id = db.save_snapshot(
@@ -89,6 +112,16 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         f"{char.combat_power:,}, item level {char.item_level:,}, "
         f"gear accuracy {char.gear_accuracy:g}, {len(char.wasted_lines)} wasted lines."
     )
+    if char.has_enhancement_data:
+        totals = char.total_enhancement_gain()
+        top = ", ".join(
+            f"{k} +{v:g}" for k, v in
+            sorted(totals.items(), key=lambda kv: -kv[1])[:3]
+        )
+        print(
+            f"Enhancement headroom: {char.enhancement_levels_available} levels "
+            f"available ({top})."
+        )
     print(f"Database: {cfg.db_path}")
     return 0
 
@@ -97,9 +130,16 @@ def _print_audit(char, engine: Engine, limit: int | None) -> None:
     recs = engine.audit(char)
     print(f"\n{char.name} -- {char.class_name} {char.level}, "
           f"CP {char.combat_power:,}, item level {char.item_level:,}")
+    print(f"Goal: {engine.profile_label}")
     print(f"Gear Accuracy {char.gear_accuracy:g} "
           f"(components only, not an in-game total)")
-    print(f"{len(char.wasted_lines)} wasted stat lines\n")
+    print(f"{len(char.wasted_lines)} wasted stat lines")
+    if char.has_enhancement_data:
+        print(f"{char.enhancement_levels_available} enhancement levels available")
+    else:
+        print("No enhancement data in this snapshot "
+              "(re-run 'aion2 snapshot' to collect it)")
+    print()
     print(f"{len(recs)} recommendations, highest priority first:\n")
 
     shown = recs[:limit] if limit else recs
@@ -113,9 +153,29 @@ def _print_audit(char, engine: Engine, limit: int | None) -> None:
         print(f"... and {len(recs) - limit} more. Use --all to see everything.")
 
 
+def cmd_profiles(args: argparse.Namespace) -> int:
+    cfg = load_settings(args.env_file)
+    thresholds = load_config(args.thresholds or cfg.thresholds_path or None)
+    default = thresholds.get("default_profile", "")
+
+    print("Goal profiles. Pick one with --profile on audit or replay.\n")
+    for name, body in (thresholds.get("profiles") or {}).items():
+        mark = "  (default)" if name == default else ""
+        print(f"  {name}{mark}")
+        print(f"      {body.get('label', name)}")
+        desc = " ".join((body.get("description") or "").split())
+        if desc:
+            print(f"      {desc}")
+        print()
+    return 0
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     cfg = load_settings(args.env_file)
-    engine = Engine(load_config(args.thresholds or cfg.thresholds_path or None))
+    engine = Engine(
+        load_config(args.thresholds or cfg.thresholds_path or None),
+        profile=args.profile,
+    )
 
     row = db.latest_snapshot(cfg.db_path, cfg.character_id or None)
     if row is None:
@@ -132,9 +192,46 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     """Audit a capture directory without touching the network."""
-    engine = Engine(load_config(args.thresholds))
+    engine = Engine(load_config(args.thresholds), profile=args.profile)
     char = load_capture(args.directory)
     _print_audit(char, engine, None if args.all else 15)
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Show how a tracked number has moved across snapshots.
+
+    This is the honest measurement of Combat Power: the engine ranks by a
+    heuristic, but what actually happened is whatever the next snapshot says.
+    """
+    cfg = load_settings(args.env_file)
+    rows = db.history(cfg.db_path, args.stat, args.days)
+    if not rows:
+        print(f"No snapshots in the last {args.days} days.")
+        return 1
+
+    print(f"\n{args.stat} over the last {args.days} days\n")
+    values = [r["value"] for r in rows]
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+
+    prev = None
+    for r in rows:
+        v = r["value"]
+        bar = "#" * int(1 + 34 * (v - lo) / span)
+        delta = ""
+        if prev is not None:
+            d = v - prev
+            if d:
+                delta = f"  {d:+,.0f}"
+        print(f"  {r['taken_at'][:16]}  {v:>12,.0f}  {bar}{delta}")
+        prev = v
+
+    first, last = values[0], values[-1]
+    change = last - first
+    print(f"\n  {len(rows)} snapshots, net change {change:+,.0f}")
+    if change and first:
+        print(f"  {100.0 * change / first:+.2f}% from the first snapshot")
     return 0
 
 
@@ -168,18 +265,42 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("snapshot", help="fetch and store a snapshot")
     s.add_argument("--force", action="store_true", help="ignore the cooldown")
+    s.add_argument(
+        "--no-enhancements",
+        action="store_true",
+        help="skip the enhancement scan, halving request count but leaving "
+             "the audit without upgrade figures",
+    )
     s.set_defaults(func=cmd_snapshot)
 
     a = sub.add_parser("audit", help="recommendations from the latest snapshot")
     a.add_argument("--all", action="store_true", help="show every recommendation")
+    a.add_argument("--profile", default=None,
+                   help="goal profile, see 'aion2 profiles'")
     a.add_argument("--thresholds", default=None)
     a.set_defaults(func=cmd_audit)
 
     r = sub.add_parser("replay", help="audit a capture directory offline")
     r.add_argument("directory", type=Path)
     r.add_argument("--all", action="store_true")
+    r.add_argument("--profile", default=None)
     r.add_argument("--thresholds", default=None)
     r.set_defaults(func=cmd_replay)
+
+    p_ = sub.add_parser("profiles", help="list the available goal profiles")
+    p_.add_argument("--thresholds", default=None)
+    p_.set_defaults(func=cmd_profiles)
+
+    h = sub.add_parser("history", help="how a tracked number moved over time")
+    h.add_argument(
+        "stat",
+        nargs="?",
+        default="combat_power",
+        choices=["combat_power", "item_level", "gear_accuracy",
+                 "wasted_lines", "level"],
+    )
+    h.add_argument("--days", type=int, default=90)
+    h.set_defaults(func=cmd_history)
 
     w = sub.add_parser("serve", help="run the read-only dashboard")
     w.set_defaults(func=cmd_serve)
@@ -192,6 +313,13 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return int(args.func(args))
+    except UnknownProfile as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        print("Run 'aion2 profiles' to list them.", file=sys.stderr)
+        return 2
+    except ConfigNotFound as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 2
     except Aion2Error as exc:
         print(f"\nPLAYNC error: {exc}", file=sys.stderr)
         return 2

@@ -182,11 +182,23 @@ def test_skill_targets_all_met(char, engine):
     assert engine.skill_targets(char) == []
 
 
-def test_arcana_enhancement_flagged_for_plus_zero(char, engine):
+def test_arcana_reports_sets_not_enhancement(char, engine):
+    """Arcana enhancement is covered by enhancement_upgrades, which handles
+    every item. Emitting it from both produced duplicate rows."""
     recs = engine.arcana(char)
     titles = " ".join(r.title for r in recs)
-    assert "Bell of Vigor" in titles
-    assert "Mirror of Vigor" in titles
+
+    assert "Primal Vigor" in titles, "should report the equipped set"
+    assert "Enhance" not in titles, "enhancement belongs to enhancement_upgrades"
+
+
+def test_lone_set_piece_is_flagged(char, engine):
+    """The Compass of Magic is the only Magic Armor piece equipped, so it
+    contributes no set bonus."""
+    recs = engine.arcana(char)
+    lone = [r for r in recs if "only piece" in r.title]
+    assert lone, "a single-piece set should be flagged"
+    assert "Compass of Magic" in lone[0].title
 
 
 def test_main_stats_never_flagged_as_wasted(char):

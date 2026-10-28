@@ -66,10 +66,18 @@ def test_engine_reports_missing_weights():
 
 def test_shipped_config_has_the_keys_the_engine_reads():
     cfg = load_config()
-    assert cfg["stat_weights"], "stat_weights drives all ranking"
+    assert cfg["profiles"], "profiles drive all ranking"
+    assert cfg["default_profile"] in cfg["profiles"]
     assert cfg["wasted_stats"], "wasted_stats drives swap detection"
     assert cfg["skill_targets"]
     assert cfg["accuracy"]["target_min"] > 0
+
+
+def test_every_profile_has_weights():
+    cfg = load_config()
+    for name, body in cfg["profiles"].items():
+        assert body.get("stat_weights"), f"profile {name} has no stat_weights"
+        assert body.get("label"), f"profile {name} has no label"
 
 
 def test_project_root_is_sane():

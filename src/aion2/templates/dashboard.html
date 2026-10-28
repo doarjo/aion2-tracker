@@ -88,6 +88,19 @@
   .grade-Common{color:#9aa7b6}.grade-Rare{color:#58a6ff}
   .grade-Legend{color:#d2a8ff}.grade-Unique{color:#e3b341}
 
+  /* ---------- goal switcher ---------- */
+  .goals{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 20px}
+  .goals .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;
+              letter-spacing:.7px;margin-right:4px}
+  .goal{
+    display:inline-block;padding:6px 14px;border-radius:999px;font-size:12.5px;
+    text-decoration:none;color:var(--muted);background:var(--panel);
+    border:1px solid var(--line);transition:all .12s
+  }
+  .goal:hover{color:var(--text);border-color:var(--accent)}
+  .goal.on{background:rgba(77,163,255,.14);color:var(--accent);
+           border-color:rgba(77,163,255,.5);font-weight:600}
+
   .notice{
     background:rgba(227,179,65,.08);border:1px solid rgba(227,179,65,.3);
     border-radius:10px;padding:16px 18px;margin-bottom:20px;color:#f0d79a
@@ -143,24 +156,40 @@
     </div>
   </header>
 
+  {% if profiles %}
+  <div class="goals">
+    <span class="lbl">Goal</span>
+    {% for name, label in profiles.items() %}
+      <a class="goal {% if name == active_profile %}on{% endif %}"
+         href="/?profile={{ name }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div class="cards">
+    {% if totals.has_enhancement %}
     <div class="card">
-      <div class="v">{{ "%g"|format(totals.gear_accuracy) }}</div>
-      <div class="k">Gear Accuracy</div>
-      <div class="note">Flat Accuracy readable from gear. Not your in-game total:
-        the class base value and buffs are not published.</div>
+      <div class="v enh">{{ totals.enh_levels }}</div>
+      <div class="k">Enhancement Levels</div>
+      <div class="note">
+        Available across your gear.
+        {% for sid, val in totals.enh_top %}
+          {{ sid }} +{{ "%g"|format(val) }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      </div>
     </div>
-    <div class="card">
-      <div class="v" style="color:var(--good)">+{{ "%g"|format(totals.accuracy_headroom) }}</div>
-      <div class="k">Accuracy Available</div>
-      <div class="note">If every wasted manastone became an Accuracy stone of the
-        same grade.</div>
-    </div>
+    {% endif %}
     <div class="card">
       <div class="v bad">{{ totals.wasted_total }}</div>
       <div class="k">Wasted Lines</div>
       <div class="note">{{ totals.wasted_stones }} manastones,
         {{ totals.wasted_substats }} sub-stats.</div>
+    </div>
+    <div class="card">
+      <div class="v">{{ "%g"|format(totals.gear_accuracy) }}</div>
+      <div class="k">Gear Accuracy</div>
+      <div class="note">Readable from gear only. Not your in-game total: the
+        class base value and buffs are not published.</div>
     </div>
     <div class="card">
       <div class="v">{{ "%g"|format(character.attributes.get('AGI', 0)) }}
@@ -171,7 +200,15 @@
     </div>
   </div>
 
-  <h2>Fix this first &mdash; {{ recommendations|length }} recommendations</h2>
+  {% if not totals.has_enhancement %}
+    <div class="notice">
+      This snapshot has no enhancement data, so upgrade recommendations are
+      missing. Run <code>aion2 snapshot</code> again to collect it.
+    </div>
+  {% endif %}
+
+  <h2>Fix this first &mdash; {{ recommendations|length }} recommendations
+      for {{ active_label }}</h2>
   <div class="panel">
     {% for r in recommendations %}
       <div class="rec">

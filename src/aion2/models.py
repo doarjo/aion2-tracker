@@ -238,7 +238,30 @@ class Character:
     boards: list[Board] = field(default_factory=list)
     titles: list[dict[str, Any]] = field(default_factory=list)
 
+    #: {slot_pos: {stat_id: gain}} -- exact main-stat gain from taking each
+    #: item to its enchant cap, measured against PLAYNC at snapshot time.
+    #: Empty when the snapshot was taken without an enhancement scan.
+    enhancement_headroom: dict[str, dict[str, float]] = field(default_factory=dict)
+
     # -- derived -----------------------------------------------------------
+
+    @property
+    def has_enhancement_data(self) -> bool:
+        return bool(self.enhancement_headroom)
+
+    @property
+    def enhancement_levels_available(self) -> int:
+        return sum(
+            max(0, it.max_enchant_level - it.enchant_level) for it in self.items
+        )
+
+    def total_enhancement_gain(self) -> dict[str, float]:
+        """Summed stat gain if every item went to its cap."""
+        out: dict[str, float] = {}
+        for gains in self.enhancement_headroom.values():
+            for stat_id, value in gains.items():
+                out[stat_id] = out.get(stat_id, 0.0) + value
+        return out
 
     @property
     def gear_accuracy(self) -> float:
@@ -285,6 +308,7 @@ def build_character(
     equipment: dict[str, Any],
     items: Iterable[Item],
     boards: Iterable[Board],
+    enhancement_headroom: dict[str, dict[str, float]] | None = None,
 ) -> Character:
     """Combine the raw payloads into one object, resolving effective skill
     levels across all three of their sources."""
@@ -351,6 +375,7 @@ def build_character(
         # titleList is the three stat-bearing equipped titles. profile.titleName
         # is a separate cosmetic title and is often blank; ignore it.
         titles=list((info.get("title") or {}).get("titleList") or []),
+        enhancement_headroom=dict(enhancement_headroom or {}),
     )
 
 

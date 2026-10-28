@@ -55,7 +55,10 @@ def from_payloads(payloads: dict[str, Any]) -> Character:
         boards.append(parse_board(summaries.get(bid, {"id": bid}), detail))
     boards.sort(key=lambda b: b.board_id)
 
-    return build_character(info, equipment, items, boards)
+    return build_character(
+        info, equipment, items, boards,
+        enhancement_headroom=payloads.get("enhancement_headroom") or {},
+    )
 
 
 def _load(path: Path) -> Any:

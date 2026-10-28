@@ -22,8 +22,6 @@ from typing import Any, Iterable
 import yaml
 
 from . import stats as S
-from .client import Aion2Client, CharacterRef
-from .fetch import fetch_item_at_enchant
 from .models import Character, Item, StatLine
 from .paths import candidate_config_dirs, find_config_file
 
@@ -114,10 +112,37 @@ def load_config(path: str | Path | None = None, *, strict: bool = True) -> dict[
     return loaded
 
 
+class UnknownProfile(ValueError):
+    pass
+
+
 class Engine:
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        profile: str | None = None,
+    ) -> None:
         self.cfg = config if config is not None else load_config()
-        self.weights: dict[str, float] = self.cfg.get("stat_weights") or {}
+
+        profiles: dict[str, Any] = self.cfg.get("profiles") or {}
+        requested = profile or self.cfg.get("default_profile") or ""
+
+        if requested and profiles:
+            if requested not in profiles:
+                raise UnknownProfile(
+                    f"Unknown profile {requested!r}. Available: "
+                    f"{', '.join(sorted(profiles))}"
+                )
+            chosen = profiles[requested]
+            self.profile = requested
+            self.profile_label = chosen.get("label", requested)
+            self.weights = dict(chosen.get("stat_weights") or {})
+        else:
+            # Backward compatibility with a flat top-level stat_weights block.
+            self.profile = requested or "custom"
+            self.profile_label = self.profile
+            self.weights = dict(self.cfg.get("stat_weights") or {})
+
         wasted = self.cfg.get("wasted_stats")
         self.wasted_ids = frozenset(wasted) if wasted else S.WASTED_DPS_IDS
 
@@ -129,10 +154,22 @@ class Engine:
                 "manastone swaps suppressed. Check that config/thresholds.yaml "
                 "is readable."
             )
+        else:
+            log.info(
+                "profile %r with %d stat weights", self.profile, len(self.weights)
+            )
 
     @property
     def has_config(self) -> bool:
         return bool(self.weights)
+
+    @staticmethod
+    def available_profiles(config: dict[str, Any] | None = None) -> dict[str, str]:
+        cfg = config if config is not None else load_config()
+        return {
+            name: body.get("label", name)
+            for name, body in (cfg.get("profiles") or {}).items()
+        }
 
     # -- scoring -----------------------------------------------------------
 
@@ -318,27 +355,59 @@ class Engine:
         return out
 
     def arcana(self, char: Character) -> list[Recommendation]:
-        out = []
-        for item in char.items:
-            if not item.is_arcana:
-                continue
-            if item.enchant_level < item.max_enchant_level:
-                headroom = item.max_enchant_level - item.enchant_level
+        """Arcana set completion.
+
+        Per-item Arcana enhancement is NOT reported here -- enhancement_upgrades
+        already covers every item including Arcana, and emitting both produced
+        duplicate rows.
+        """
+        arcana = [i for i in char.items if i.is_arcana]
+        if not arcana:
+            return []
+
+        out: list[Recommendation] = []
+        sets: dict[str, int] = {}
+        for item in arcana:
+            if item.set_name:
+                sets[item.set_name] = max(
+                    sets.get(item.set_name, 0), item.set_equipped
+                )
+
+        # An Arcana contributing to no set, or to a set with only one piece
+        # equipped, is giving up the set bonus.
+        for item in arcana:
+            if item.set_name and sets.get(item.set_name, 0) <= 1:
                 out.append(
                     Recommendation(
                         category="arcana",
-                        title=f"Enhance {item.name} (+{item.enchant_level})",
-                        detail=(
-                            f"{item.name} is at +{item.enchant_level} of a possible "
-                            f"+{item.max_enchant_level}. Each level adds 1 to its "
-                            f"god stat, and Arcana enhancement is cheap relative "
-                            f"to gear."
+                        title=(
+                            f"{item.name} is the only piece of its "
+                            f"{item.set_name} set"
                         ),
-                        priority=Priority.MEDIUM if headroom >= 3 else Priority.LOW,
-                        score=headroom * 3.0,
+                        detail=(
+                            f"A lone set piece gives no set bonus. Either build "
+                            f"toward {item.set_name} or replace it with a piece "
+                            f"of a set you already run."
+                        ),
+                        priority=Priority.LOW,
+                        score=5.0,
                         slot_name=item.slot_name,
                         item_name=item.name,
-                        action=f"Enhance {item.name} to +{item.max_enchant_level}.",
+                        action=f"Reconsider {item.name} in slot {item.slot_pos}.",
+                    )
+                )
+
+        for set_name, count in sorted(sets.items()):
+            if count > 1:
+                out.append(
+                    Recommendation(
+                        category="arcana",
+                        title=f"{set_name} set: {count} pieces equipped",
+                        detail=(
+                            f"{count} of 5 slots are contributing to {set_name}."
+                        ),
+                        priority=Priority.INFO,
+                        score=0.0,
                     )
                 )
         return out
@@ -422,11 +491,19 @@ class Engine:
                 f" Swapping every wasted manastone to Accuracy would add roughly "
                 f"+{headroom:g} more."
             )
+
+        # Only escalate when the active profile actually cares about Accuracy.
+        # Under a Combat Power goal this is context, not a call to action.
+        accuracy_weight = max(
+            self.weight("WeaponAccuracy"), self.weight("Accuracy")
+        )
+        urgent = gear < warn and accuracy_weight >= 3.0
+
         return Recommendation(
             category="accuracy",
             title=f"Gear Accuracy: {gear:g}",
             detail=detail,
-            priority=Priority.CRITICAL if gear < warn else Priority.INFO,
+            priority=Priority.CRITICAL if urgent else Priority.INFO,
             score=0.0,
             gains={"Accuracy": headroom} if headroom else {},
         )
@@ -448,90 +525,117 @@ class Engine:
 
     # -- online check ------------------------------------------------------
 
-    def enhancement_upgrades(
-        self,
-        char: Character,
-        client: Aion2Client,
-        ref: CharacterRef,
-        *,
-        max_levels_ahead: int | None = None,
-    ) -> list[Recommendation]:
-        """Ask PLAYNC what each item looks like a few enhancement levels up.
+    def enhancement_upgrades(self, char: Character) -> list[Recommendation]:
+        """Rank enhancement using the headroom recorded at snapshot time.
 
-        Costs one request per item per level probed, so it is rate limited and
-        deliberately bounded.
+        Values are exact, having come from PLAYNC recalculating each item at
+        its cap. No network needed here.
         """
+        if not char.has_enhancement_data:
+            return []
+
         enh = self.cfg.get("enhancement") or {}
-        ahead = max_levels_ahead or int(enh.get("max_levels_ahead", 4))
         min_gain = float(enh.get("min_weighted_gain", 5.0))
 
         out: list[Recommendation] = []
-        for item in char.items:
-            if item.enchant_level >= item.max_enchant_level:
-                continue
-            target = min(item.enchant_level + ahead, item.max_enchant_level)
-            try:
-                upgraded = fetch_item_at_enchant(client, ref, item, target)
-            except Exception as exc:  # noqa: BLE001 - report, do not abort the run
-                log.warning("enhancement probe failed for %s: %s", item.name, exc)
-                continue
-
-            gains: dict[str, float] = {}
-            for new in upgraded.main_stats:
-                old = next(
-                    (m.value for m in item.main_stats if m.stat_id == new.stat_id), 0.0
-                )
-                delta = new.value - old
-                if delta > 0:
-                    gains[new.stat_id] = delta
-            if not gains:
+        for slot_str, gains in char.enhancement_headroom.items():
+            item = char.item_at(int(slot_str))
+            if item is None or not gains:
                 continue
 
             score = self.score_gains(gains)
             if score < min_gain:
                 continue
 
+            levels = item.max_enchant_level - item.enchant_level
+            gain_text = ", ".join(
+                f"{S.display_name(k)} +{v:g}"
+                for k, v in sorted(gains.items(), key=lambda kv: -kv[1])
+            )
+
+            # An item sitting far below its cap is both a bigger win and
+            # usually cheaper per level, so weight those up.
+            if score >= 400:
+                prio = Priority.CRITICAL
+            elif score >= 150:
+                prio = Priority.HIGH
+            elif score >= 40:
+                prio = Priority.MEDIUM
+            else:
+                prio = Priority.LOW
+
+            # Include the slot: paired items such as the two Clash Runes
+            # otherwise render as two identical rows.
             out.append(
                 Recommendation(
                     category="enhancement",
-                    title=f"Enhance {item.name} from +{item.enchant_level} to +{target}",
-                    detail=(
-                        "Exact values from PLAYNC, not an estimate: "
-                        + ", ".join(
-                            f"{S.display_name(k)} +{v:g}" for k, v in gains.items()
-                        )
-                        + f". Item caps at +{item.max_enchant_level}."
+                    title=(
+                        f"Enhance {item.name} ({item.slot_name}) "
+                        f"from +{item.enchant_level} to +{item.max_enchant_level}"
                     ),
-                    priority=Priority.HIGH if score >= 60 else Priority.MEDIUM,
+                    detail=(
+                        f"{levels} level(s) of headroom. Exact values from "
+                        f"PLAYNC, not an estimate: {gain_text}."
+                    ),
+                    priority=prio,
                     score=score,
                     slot_name=item.slot_name,
                     item_name=item.name,
-                    gains=gains,
-                    action=f"Enhance {item.name} to +{target}.",
+                    gains=dict(gains),
+                    action=(
+                        f"Enhance {item.name} to +{item.max_enchant_level}."
+                    ),
                 )
             )
         return out
 
+    def enhancement_summary(self, char: Character) -> Recommendation | None:
+        """One headline row for total enhancement headroom."""
+        if not char.has_enhancement_data:
+            return None
+        totals = char.total_enhancement_gain()
+        if not totals:
+            return None
+
+        top = ", ".join(
+            f"{S.display_name(k)} +{v:g}"
+            for k, v in sorted(totals.items(), key=lambda kv: -kv[1])[:4]
+        )
+        return Recommendation(
+            category="enhancement",
+            title=(
+                f"{char.enhancement_levels_available} enhancement levels "
+                f"available across your gear"
+            ),
+            detail=(
+                f"Taking every item to its cap is worth {top}. These are exact "
+                f"values from PLAYNC. Enhancement is usually the largest single "
+                f"lever on Combat Power."
+            ),
+            priority=Priority.INFO,
+            score=0.0,
+            gains=dict(totals),
+        )
+
     # -- entry point -------------------------------------------------------
 
-    def audit(
-        self,
-        char: Character,
-        client: Aion2Client | None = None,
-        ref: CharacterRef | None = None,
-    ) -> list[Recommendation]:
-        """Full ranked audit. Pass client+ref to include exact enhancement
-        deltas, which costs extra requests."""
-        recs: list[Recommendation] = [self.accuracy_summary(char)]
+    def audit(self, char: Character) -> list[Recommendation]:
+        """Full ranked audit. Entirely offline: enhancement figures come from
+        the headroom recorded at snapshot time."""
+        recs: list[Recommendation] = []
+
+        summary = self.enhancement_summary(char)
+        if summary:
+            recs.append(summary)
+        recs.append(self.accuracy_summary(char))
+
+        recs += self.enhancement_upgrades(char)
         recs += self.empty_stone_slots(char)
         recs += self.manastone_swaps(char)
         recs += self.skill_targets(char)
         recs += self.arcana(char)
         recs += self.reroll_candidates(char)
         recs += self.attribute_checks(char)
-
-        if client is not None and ref is not None:
-            recs += self.enhancement_upgrades(char, client, ref)
 
         return rank(recs)
 

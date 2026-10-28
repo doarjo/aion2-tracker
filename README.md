@@ -12,19 +12,37 @@ comes later.
 
 Takes a snapshot of your character and produces a ranked "fix this first" list:
 
-* **Manastone swaps** — finds stones carrying stats that do nothing for PvE
-  damage and names a replacement of the same grade, with the exact gain.
-* **Enhancement upgrades** — asks PLAYNC what an item looks like a few levels
-  higher and reports the real numbers. Not an estimate.
+* **Enhancement upgrades** — the biggest lever. Asks PLAYNC what each item
+  looks like at its cap and reports the real numbers, not estimates.
+* **Manastone swaps** — finds stones carrying stats that do nothing for your
+  goal and names a replacement of the same grade, with the exact gain.
 * **Empty sockets** — unused manastone slots.
-* **Arcana enhancement** — Arcana sitting below their cap.
 * **Sub-stat rerolls** — rolled lines wasted on defensive stats.
+* **Arcana sets** — flags a lone set piece contributing no set bonus.
 * **Skill targets** — effective level against your targets, counting Daevanion
   and Arcana bonuses, which the raw API does not do for you.
 * **Attribute check** — flags Dexterity outweighing Precision.
 
+### Goal profiles
+
+The same gear gets ranked differently depending on what you are chasing:
+
+| Profile | What it optimises |
+|---|---|
+| `combat_power` | Balanced offence and defence, for the headline CP number. Default. |
+| `pve_dps` | Damage only. Defence scores zero. |
+| `accuracy_rush` | Everything subordinated to the raid accuracy floor. |
+
+```bash
+aion2 profiles                    # list them
+aion2 audit                       # uses the default
+aion2 audit --profile pve_dps     # or pick one
+```
+
+On the dashboard they are buttons at the top of the page.
+
 Everything is keyed off `config/thresholds.yaml`, which you can retune without
-touching code.
+touching code — including adding your own profile.
 
 ---
 
@@ -51,10 +69,16 @@ causes a 404.
 Then:
 
 ```bash
-aion2 snapshot     # ~30 rate-limited requests, about 2 minutes
+aion2 snapshot     # ~60 rate-limited requests, about 4 minutes
 aion2 audit        # ranked recommendations in the terminal
+aion2 history      # how Combat Power has actually moved
 aion2 serve        # dashboard on http://localhost:8080
 ```
+
+The snapshot includes an enhancement scan, which costs one extra request per
+item but means every later audit runs offline. Skip it with
+`--no-enhancements` to halve the request count, at the cost of losing upgrade
+recommendations.
 
 To audit a raw capture directory with no network at all:
 
@@ -93,9 +117,33 @@ network.
 | `GET /` | Dashboard |
 | `GET /health` | Health check for Docker and Unraid |
 | `GET /api/character` | Current snapshot summary |
-| `GET /api/recommendations` | Ranked recommendations as JSON |
+| `GET /api/recommendations?profile=pve_dps` | Ranked recommendations as JSON |
+| `GET /api/profiles` | Available goal profiles |
 | `GET /api/history?stat=combat_power&days=90` | Time series |
 | `POST /refresh` | Take a snapshot, respects the cooldown. `?force=true` overrides |
+
+---
+
+## Important: what the rankings are, and are not
+
+**Combat Power cannot be calculated.** PLAYNC publishes `combatPower` as a
+single number for your current state only. There is no endpoint that answers
+"what would it be if", and the formula behind it is not published.
+
+So the ranking is a **weighting heuristic**, tuned per goal profile in
+`config/thresholds.yaml`. It never claims a CP delta.
+
+The individual stat gains, however, are exact. The item endpoint accepts
+`enchantLevel` as a free parameter and recalculates, so "Penetration +400 from
+taking this rune to +10" is PLAYNC's own number, not ours.
+
+The honest CP measurement is empirical. Snapshots record `combatPower` over
+time, so once you act on a recommendation the next snapshot shows what it
+actually did:
+
+```bash
+aion2 history combat_power
+```
 
 ---
 
