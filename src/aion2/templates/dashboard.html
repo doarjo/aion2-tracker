@@ -366,21 +366,21 @@
 
   <div class="cols" style="margin-top:12px">
     <div>
-      <h2>Key skills <span class="n">· trained / cap</span></h2>
+      <h2>Key skills <span class="n">· in-game level = trained + grants</span></h2>
       <div class="tbl-wrap"><table>
         <thead><tr><th>Skill</th><th class="num">Trained</th>
           <th class="num">Boards</th><th class="num">Gear</th>
-          <th class="num">Total</th></tr></thead>
+          <th class="num">In game</th></tr></thead>
         <tbody>
         {% for s in key_skills %}
           <tr>
             <td>{{ s.name }}</td>
-            <td class="num {% if s.base_level < skill_cap %}bad{% endif %}">
-              {{ s.base_level }}<span class="dim">/{{ skill_cap }}</span></td>
+            <td class="num {% if not s.at_cap %}bad{% endif %}">
+              {{ s.trained_level }}<span class="dim">/{{ s.trained_cap }}</span></td>
             <td class="num dim">{{ s.daevanion_bonus or '·' }}</td>
             <td class="num {% if s.gear_bonus %}enh{% else %}dim{% endif %}">
               {{ s.gear_bonus or '·' }}</td>
-            <td class="num" style="font-weight:650">{{ s.effective_level }}</td>
+            <td class="num" style="font-weight:650">{{ s.displayed_level }}</td>
           </tr>
         {% endfor %}
         </tbody>
@@ -391,11 +391,11 @@
         <thead><tr><th>Stigma</th><th class="num">Level</th>
           <th class="num">Status</th></tr></thead>
         <tbody>
-        {% for s in character.skills|selectattr('is_stigma')|sort(attribute='base_level', reverse=true) %}
+        {% for s in character.skills|selectattr('is_stigma')|sort(attribute='displayed_level', reverse=true) %}
           <tr>
             <td>{{ s.name }}</td>
-            <td class="num {% if s.acquired and s.base_level < skill_cap %}bad{% endif %}">
-              {{ s.base_level }}<span class="dim">/{{ skill_cap }}</span></td>
+            <td class="num {% if s.acquired and not s.at_cap %}bad{% endif %}">
+              {{ s.trained_level }}<span class="dim">/{{ s.trained_cap }}</span></td>
             <td class="num dim">
               {%- if not s.acquired %}not learned
               {%- elif not s.equipped %}<span class="bad">not slotted</span>

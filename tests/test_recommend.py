@@ -49,18 +49,28 @@ def test_arcana_slots_present(char):
     assert all(41 <= i.slot_pos <= 45 for i in arcana)
 
 
-def test_effective_skill_level_sums_three_sources(char):
-    """Reading skillLevel alone under-reports. Deadshot is 20 listed but 30
-    effective once Daevanion and gear grants are counted."""
+def test_displayed_level_is_not_a_base_to_add_to(char):
+    """skillLevel from the API is what the game SHOWS and already contains the
+    grants. Adding them reported Deadshot as 30 against an in-game 20."""
     deadshot = char.skill("Deadshot")
     assert deadshot is not None
-    assert deadshot.base_level == 20
-    assert deadshot.daevanion_bonus > 0
-    assert deadshot.gear_bonus > 0
-    assert deadshot.effective_level == (
-        deadshot.base_level + deadshot.daevanion_bonus + deadshot.gear_bonus
-    )
-    assert deadshot.effective_level > deadshot.base_level
+    assert deadshot.displayed_level == 20
+    assert deadshot.daevanion_bonus == 4
+    assert deadshot.gear_bonus == 6
+    assert deadshot.trained_level == 10
+    assert deadshot.at_cap
+
+
+def test_every_capped_skill_lands_on_exactly_ten(char):
+    """The evidence for a trained cap of 10: subtract the grants and 18 of 26
+    skills land on exactly 10, and none exceeds it."""
+    trained = [
+        s.trained_level for s in char.skills
+        if not s.is_stigma and s.displayed_level > 0
+    ]
+    assert trained
+    assert max(trained) == 10, "nothing trains past 10"
+    assert trained.count(10) >= 15, "most skills are already capped"
 
 
 def test_gear_skill_grants_are_not_arcana_only(char):
@@ -79,10 +89,12 @@ def test_stigmas_are_category_dp(char):
     assert stigmas, "Ranger should have Dp skills"
     names = {s.name for s in stigmas}
     assert "Vaizel's Authority" in names
-    # Dp skills receive no Daevanion or gear bonuses.
+    # Dp skills receive no Daevanion or gear grants, so displayed is trained.
     for s in stigmas:
         assert s.daevanion_bonus == 0
         assert s.gear_bonus == 0
+        assert s.trained_level == s.displayed_level
+        assert s.trained_cap == 20
 
 
 def test_gear_accuracy_excludes_status_effect_chance(char):
@@ -187,10 +199,16 @@ def test_dexterity_over_precision_is_flagged(char, engine):
     assert any("Dexterity" in r.title for r in recs)
 
 
-def test_skill_targets_all_met(char, engine):
-    """Every target in the shipped thresholds file is satisfied, so the engine
-    should raise nothing for skills."""
-    assert engine.skill_targets(char) == []
+def test_skill_targets_uses_the_displayed_level(char, engine):
+    """Gale Arrow shows 16 against a target of 20. The old inflated maths
+    reported it as 22 and hid the shortfall entirely."""
+    recs = engine.skill_targets(char)
+    gale = [r for r in recs if "Gale Arrow" in r.title]
+    assert gale, "a genuine shortfall the old model concealed"
+    assert "4 levels below target" in gale[0].title
+
+    # Training is already maxed, so the advice must point at grants.
+    assert "Training is capped" in gale[0].detail
 
 
 def test_arcana_reports_sets_not_enhancement(char, engine):

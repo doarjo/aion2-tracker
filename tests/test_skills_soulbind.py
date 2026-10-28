@@ -3,7 +3,7 @@
 Both exist because the first pass missed them:
 
 * skill_targets only checked six named skills, all of which passed, so the
-  engine said nothing while 20 of 35 skills sat below the cap.
+  engine said nothing while plenty of training remained.
 * soulBindRate was recorded as "always 100" after looking at two sample
   characters who happened to be fully bound. Our own Ranger's bow is 13.3.
 """
@@ -14,8 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from aion2.models import SKILL_LEVEL_CAP, Character, Item, Skill
-from aion2.recommend import Engine, load_config
+from aion2.models import (
+    SKILL_TRAINED_CAP,
+    STIGMA_TRAINED_CAP,
+    Character,
+    Item,
+    Skill,
+)
+from aion2.recommend import Engine, Priority, load_config
 from aion2.replay import load_capture
 
 CAPTURE = Path(__file__).resolve().parents[1] / "captures" / "epitet"
@@ -62,10 +68,45 @@ def test_unacquired_skill_is_never_in_use():
         assert not s.in_use
 
 
-def test_levels_to_cap():
-    assert Skill("A", "Active", 9).levels_to_cap == SKILL_LEVEL_CAP - 9
-    assert Skill("A", "Active", SKILL_LEVEL_CAP).levels_to_cap == 0
-    assert Skill("A", "Active", 99).levels_to_cap == 0
+def test_displayed_level_already_contains_the_grants():
+    """THE bug this model replaced.
+
+    The API's skillLevel is what the game shows and already includes board
+    and gear grants. Treating it as a base and adding the bonuses reported
+    Deadshot as 30 when the game shows 20.
+    """
+    deadshot = Skill(
+        "Deadshot", "Active", 20, daevanion_bonus=4, gear_bonus=6,
+        acquired=True, equipped=True,
+    )
+    assert deadshot.displayed_level == 20, "what the game shows"
+    assert deadshot.trained_level == 10, "20 - 4 - 6"
+    assert deadshot.trained_level + deadshot.daevanion_bonus + deadshot.gear_bonus == 20
+
+
+def test_active_and_passive_train_to_ten():
+    for category in ("Active", "Passive"):
+        s = Skill("X", category, 10, daevanion_bonus=0, gear_bonus=0)
+        assert s.trained_cap == SKILL_TRAINED_CAP == 10
+        assert s.at_cap
+        assert s.levels_to_cap == 0
+
+
+def test_stigmas_train_to_twenty_and_take_no_grants():
+    """Stigmas receive no board or gear grants, so displayed is trained."""
+    s = Skill("Vaizel's Authority", "Dp", 20, acquired=True, equipped=True)
+    assert s.trained_cap == STIGMA_TRAINED_CAP == 20
+    assert s.trained_level == 20
+    assert s.at_cap
+
+    short = Skill("Griffon Arrow", "Dp", 15, acquired=True, equipped=True)
+    assert short.trained_level == 15
+    assert short.levels_to_cap == 5
+
+
+def test_trained_level_never_goes_negative():
+    weird = Skill("X", "Active", 2, daevanion_bonus=5, gear_bonus=5)
+    assert weird.trained_level == 0
 
 
 # --------------------------------------------------------------------------
@@ -75,14 +116,17 @@ def test_levels_to_cap():
 
 def test_skill_sweep_reports_active_gap(engine):
     char = _char(skills=[
+        # shows 2 with no grants, so trained 2 of a cap of 10
         Skill("Explosion Trap", "Active", 2, acquired=True, equipped=True),
-        Skill("Deadshot", "Active", 20, acquired=True, equipped=True),
+        # shows 20 but that is 10 trained plus 10 of grants: already capped
+        Skill("Deadshot", "Active", 20, daevanion_bonus=4, gear_bonus=6,
+              acquired=True, equipped=True),
     ])
     recs = engine.skill_levels(char)
     active = [r for r in recs if "active" in r.title]
     assert len(active) == 1
-    assert "18 levels" in active[0].title
-    assert "Explosion Trap 2/20" in active[0].detail
+    assert "8 levels" in active[0].title, "10 cap minus 2 trained"
+    assert "Explosion Trap 2/10" in active[0].detail
     assert "Deadshot" not in active[0].detail, "capped skills are not a gap"
 
 
@@ -119,30 +163,31 @@ def test_unlearned_stigmas_are_a_separate_lower_priority(engine):
 
 def test_no_skill_noise_when_everything_is_capped(engine):
     char = _char(skills=[
-        Skill("Deadshot", "Active", 20, acquired=True, equipped=True),
-        Skill("Rooting Eye", "Passive", 20, acquired=True),
+        Skill("Deadshot", "Active", 20, daevanion_bonus=4, gear_bonus=6,
+              acquired=True, equipped=True),
+        Skill("Rooting Eye", "Passive", 18, daevanion_bonus=4, gear_bonus=4,
+              acquired=True),
     ])
     assert engine.skill_levels(char) == []
 
 
 @needs_capture
 def test_skill_sweep_against_real_character(engine):
-    """The named-target check passes entirely, which is exactly why the sweep
-    was needed."""
+    """Key skills are capped; the remaining training is all on other skills."""
     char = load_capture(CAPTURE)
-    assert engine.skill_targets(char) == [], "named targets all met"
 
     recs = engine.skill_levels(char)
-    assert recs, "but there is still plenty of training left"
     titles = " ".join(r.title for r in recs)
 
-    # Key skills are named first; the rest are summarised below them.
-    assert "key skills" in titles
-    assert "other active skills" in titles
+    # Every key skill is trained to its cap of 10, so the sweep must stay
+    # quiet about them rather than inventing a gap.
+    assert all(s.at_cap for s in engine.key_skills(char))
+    assert "key skills" not in titles
 
-    key_rec = next(r for r in recs if "key skills" in r.title)
+    # Under-trained non-key skills are still reported, at low priority.
+    assert "other active skills" in titles
     other = next(r for r in recs if "other active" in r.title)
-    assert int(key_rec.priority) > int(other.priority)
+    assert int(other.priority) <= int(Priority.LOW)
 
 
 # --------------------------------------------------------------------------

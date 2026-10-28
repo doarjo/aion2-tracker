@@ -115,8 +115,8 @@ attributes:
   # Dexterity (DEX) drives Evasion, Block and Crit Resist -- defensive.
   flag_dexterity_above_precision: true
 
-# Specific skills worth calling out by name, checked on EFFECTIVE level
-# (listed + Daevanion + Arcana).
+# Specific skills worth calling out by name, checked on the level the game
+# DISPLAYS, which already includes board and gear grants.
 skill_targets:
   Deadshot: 20
   Gale Arrow: 20
@@ -125,13 +125,17 @@ skill_targets:
   Tempest Shot: 16
   Vaizel's Authority: 20
 
-# The general sweep: every skill you actually use, measured against the cap.
-# This is what answers "get my skills to 20" rather than only checking the
-# handful named above.
+# The general sweep: every skill you actually use, measured against its
+# TRAINED cap. This answers "what is left to train" rather than only
+# checking the handful named above.
 skills:
-  # Highest base level observed on any skill. Deadshot and Vaizel's Authority
-  # both sit at 20 and nothing exceeds it.
-  level_cap: 20
+  # NOTE: caps live in code, not here, because they are a property of the
+  # game rather than a preference. Active and Passive skills train to 10;
+  # stigmas train to 20 and receive no grants.
+  #
+  # Verified empirically: subtracting board and gear grants from the API's
+  # skillLevel lands on exactly 10 for 18 of 26 skills and never exceeds it.
+  #
   # Ignore skills within this many levels of the cap, to avoid noise.
   min_gap_to_report: 1
 

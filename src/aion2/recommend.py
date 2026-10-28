@@ -22,7 +22,7 @@ from typing import Any, Iterable
 import yaml
 
 from . import stats as S
-from .models import SKILL_LEVEL_CAP, Character, Item, Skill, StatLine
+from .models import Character, Item, Skill, StatLine
 from .paths import candidate_config_dirs, find_config_file
 
 log = logging.getLogger(__name__)
@@ -432,21 +432,31 @@ class Engine:
                     )
                 )
                 continue
-            if skill.effective_level < want:
-                short = want - skill.effective_level
+            if skill.displayed_level < want:
+                short = want - skill.displayed_level
+                detail = (
+                    f"Shows {skill.displayed_level} in game: trained "
+                    f"{skill.trained_level}/{skill.trained_cap} plus "
+                    f"{skill.daevanion_bonus} from boards and "
+                    f"{skill.gear_bonus} from gear."
+                )
+                # When training is already maxed the only route left is grants,
+                # so say which one rather than "raise it".
+                if skill.at_cap:
+                    detail += (
+                        f" Training is capped, so the remaining {short} must "
+                        f"come from board nodes or gear skill slots."
+                    )
                 out.append(
                     Recommendation(
                         category="skill",
-                        title=f"{name} is {short} level(s) below target",
-                        detail=(
-                            f"Effective level {skill.effective_level} "
-                            f"(listed {skill.base_level} + Daevanion "
-                            f"{skill.daevanion_bonus} + Arcana {skill.arcana_bonus}) "
-                            f"against a target of {want}."
+                        title=(
+                            f"{name} is {short} {_plural(short, 'level')} "
+                            f"below target {want}"
                         ),
+                        detail=detail,
                         priority=Priority.HIGH,
                         score=short * 4.0,
-                        action=f"Raise {name} to level {want}.",
                     )
                 )
         return out
@@ -459,7 +469,6 @@ class Engine:
         want when the question is "get my skills to 20".
         """
         cfg = self.cfg.get("skills") or {}
-        cap = int(cfg.get("level_cap", SKILL_LEVEL_CAP))
         min_gap = int(cfg.get("min_gap_to_report", 1))
 
         out: list[Recommendation] = []
@@ -471,19 +480,19 @@ class Engine:
         # a category total.
         key_below = [
             s for s in self.key_skills(char)
-            if s.in_use and (cap - s.base_level) >= min_gap
+            if s.in_use and s.levels_to_cap >= min_gap
         ]
         if key_below:
-            key_below.sort(key=lambda s: (cap - s.base_level), reverse=True)
+            key_below.sort(key=lambda s: s.levels_to_cap, reverse=True)
             listing = ", ".join(
-                f"{s.name} {s.base_level}/{cap}"
-                + (f" (+{s.daevanion_bonus + s.gear_bonus} from gear and boards)"
+                f"{s.name} trained {s.trained_level}/{s.trained_cap}"
+                + (f", shows {s.displayed_level} with grants"
                    if s.daevanion_bonus or s.gear_bonus else "")
                 for s in key_below[:3]
             )
             if len(key_below) > 3:
                 listing += f", +{len(key_below) - 3} more"
-            total = sum(cap - s.base_level for s in key_below)
+            total = sum(s.levels_to_cap for s in key_below)
             out.append(
                 Recommendation(
                     category="skill",
@@ -504,14 +513,16 @@ class Engine:
                 s for s in char.skills
                 if s.category == category and s.in_use
                 and s.name not in key_names
-                and (cap - s.base_level) >= min_gap
+                and s.levels_to_cap >= min_gap
             ]
             if not below:
                 continue
-            below.sort(key=lambda s: s.base_level)
+            below.sort(key=lambda s: s.trained_level)
 
-            total_levels = sum(cap - s.base_level for s in below)
-            listing = ", ".join(f"{s.name} {s.base_level}/{cap}" for s in below[:3])
+            total_levels = sum(s.levels_to_cap for s in below)
+            listing = ", ".join(
+                f"{s.name} {s.trained_level}/{s.trained_cap}" for s in below[:3]
+            )
             if len(below) > 3:
                 listing += f", +{len(below) - 3} more"
 
@@ -583,7 +594,6 @@ class Engine:
         """
         cfg = self.cfg.get("skill_slots") or {}
         min_empty = int(cfg.get("min_empty_to_report", 1))
-        cap = int((self.cfg.get("skills") or {}).get("level_cap", SKILL_LEVEL_CAP))
 
         with_space = [
             it for it in char.items if it.empty_skill_slots >= min_empty
@@ -593,30 +603,28 @@ class Engine:
 
         total_empty = sum(it.empty_skill_slots for it in with_space)
 
-        # Which key skills would most benefit from a gear grant.
-        #
-        # Measured on TRAINED level, consistently with skill_levels. A gear
-        # grant and a trained level are interchangeable ways to close the same
-        # gap, so judging this on effective_level contradicted the sweep --
-        # one row claimed every key skill was capped while the next listed
-        # nine that were not.
-        wanted = [s for s in self.key_skills(char) if s.base_level < cap]
-        wanted.sort(key=lambda s: s.base_level)
+        # Gear grants stack ON TOP of the trained cap -- a skill already
+        # trained to 10 still gains from another grant, which is the whole
+        # reason these slots are worth filling. Rank by which key skills
+        # currently receive the fewest.
+        wanted = sorted(
+            self.key_skills(char),
+            key=lambda s: s.daevanion_bonus + s.gear_bonus,
+        )
 
         out: list[Recommendation] = []
 
         if wanted:
             targets = ", ".join(
-                f"{s.name} {s.base_level}/{cap}"
-                + (f", already +{s.gear_bonus} from gear" if s.gear_bonus else "")
+                f"{s.name} (+{s.gear_bonus} from gear, shows {s.displayed_level})"
                 for s in wanted[:3]
             )
-            detail = f"Key skills short of {cap}: {targets}."
-        else:
             detail = (
-                f"Every key skill is already trained to {cap}, so spend these "
-                "on whatever your rotation leans on hardest."
+                f"Grants stack above the trained cap, so these still gain. "
+                f"Least-boosted key skills: {targets}."
             )
+        else:
+            detail = "Spend these on whatever your rotation leans on hardest."
 
         out.append(
             Recommendation(

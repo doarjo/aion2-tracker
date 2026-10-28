@@ -7,7 +7,9 @@ Parsing rules that matter, all learned the hard way in Phase 0:
   plus `subSkills` plus `set`.
 * An item's displayed value is `value + extra`, where `extra` is the
   enhancement bonus and scales with enchant level.
-* A skill's real level is its listed level PLUS Daevanion PLUS Arcana.
+* A skill's listed level ALREADY includes Daevanion and gear grants.
+  Adding them again double-counts. Trained level caps at 10 (20 for
+  stigmas, which receive no grants).
 * Key stats on `id` / `type`. The `name` field is localized and one value
   comes back as untranslated Korean.
 """
@@ -182,28 +184,62 @@ class Item:
 # --------------------------------------------------------------------------
 
 
-#: Highest base level observed on any skill. Deadshot and Vaizel's Authority
-#: both sit here, and nothing exceeds it, so treat it as the cap.
-SKILL_LEVEL_CAP = 20
+#: Trainable cap for Active and Passive skills.
+#:
+#: Verified empirically: subtracting board and gear grants from the API's
+#: skillLevel lands on exactly 10 for 18 of 26 skills, and never exceeds it.
+#: The remainder sit below 10 because they are under-trained.
+SKILL_TRAINED_CAP = 10
+
+#: Stigmas train to 20 and receive no board or gear grants, so their
+#: skillLevel is their trained level.
+STIGMA_TRAINED_CAP = 20
 
 
 @dataclass(slots=True)
 class Skill:
+    """A skill as the game presents it.
+
+    IMPORTANT: the API's `skillLevel` is the DISPLAYED level and already
+    includes Daevanion and gear grants. Adding the bonuses to it double-counts
+    -- that bug reported Deadshot as 30 when the game shows 20.
+
+        displayed = trained + daevanion + gear
+        trained   = displayed - daevanion - gear   (capped at 10, or 20 for stigmas)
+    """
+
     name: str
     category: str          # Active | Passive | Dp  (Dp == Stigma)
-    base_level: int
+    #: The API's skillLevel. What the game shows.
+    displayed_level: int
     daevanion_bonus: int = 0
     gear_bonus: int = 0
     acquired: bool = True
     equipped: bool = False
 
     @property
-    def effective_level(self) -> int:
-        return self.base_level + self.daevanion_bonus + self.gear_bonus
-
-    @property
     def is_stigma(self) -> bool:
         return self.category == "Dp"
+
+    @property
+    def trained_level(self) -> int:
+        """What you actually levelled, with the grants removed."""
+        if self.is_stigma:
+            # Stigmas receive no grants, so displayed is trained.
+            return self.displayed_level
+        return max(0, self.displayed_level - self.daevanion_bonus - self.gear_bonus)
+
+    @property
+    def trained_cap(self) -> int:
+        return STIGMA_TRAINED_CAP if self.is_stigma else SKILL_TRAINED_CAP
+
+    @property
+    def levels_to_cap(self) -> int:
+        return max(0, self.trained_cap - self.trained_level)
+
+    @property
+    def at_cap(self) -> bool:
+        return self.trained_level >= self.trained_cap
 
     @property
     def in_use(self) -> bool:
@@ -217,10 +253,6 @@ class Skill:
         if self.category == "Passive":
             return True
         return self.equipped
-
-    @property
-    def levels_to_cap(self) -> int:
-        return max(0, SKILL_LEVEL_CAP - self.base_level)
 
 
 _EFFECT = re.compile(r"^(?P<name>.+?)\s*\+(?P<amount>\d+(?:\.\d+)?)\s*(?P<pct>%?)$")
@@ -391,7 +423,10 @@ def build_character(
             Skill(
                 name=nm,
                 category=s.get("category", ""),
-                base_level=int(s.get("skillLevel") or 0),
+                # skillLevel is the DISPLAYED level and already contains the
+                # grants below. They are kept so the breakdown can be shown,
+                # not so they can be added again.
+                displayed_level=int(s.get("skillLevel") or 0),
                 daevanion_bonus=daev.get(nm, 0),
                 gear_bonus=gear.get(nm, 0),
                 acquired=bool(s.get("acquired")),
