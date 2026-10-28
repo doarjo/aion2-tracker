@@ -22,7 +22,7 @@ from typing import Any, Iterable
 import yaml
 
 from . import stats as S
-from .models import SKILL_LEVEL_CAP, Character, Item, StatLine
+from .models import SKILL_LEVEL_CAP, Character, Item, Skill, StatLine
 from .paths import candidate_config_dirs, find_config_file
 
 log = logging.getLogger(__name__)
@@ -463,13 +463,47 @@ class Engine:
         min_gap = int(cfg.get("min_gap_to_report", 1))
 
         out: list[Recommendation] = []
+        key_names = {s.name for s in self.key_skills(char)}
 
-        # --- in-use skills below cap, grouped by category -----------------
+        # --- key skills first, named individually -------------------------
+        # A level spent on Explosion Trap is a level not spent on Deadshot,
+        # so the skills that matter get called out rather than averaged into
+        # a category total.
+        key_below = [
+            s for s in self.key_skills(char)
+            if s.in_use and (cap - s.base_level) >= min_gap
+        ]
+        if key_below:
+            key_below.sort(key=lambda s: (cap - s.base_level), reverse=True)
+            listing = ", ".join(
+                f"{s.name} {s.base_level}/{cap}"
+                + (f" (+{s.daevanion_bonus + s.gear_bonus} from gear and boards)"
+                   if s.daevanion_bonus or s.gear_bonus else "")
+                for s in key_below[:3]
+            )
+            if len(key_below) > 3:
+                listing += f", +{len(key_below) - 3} more"
+            total = sum(cap - s.base_level for s in key_below)
+            out.append(
+                Recommendation(
+                    category="skill",
+                    title=(
+                        f"{total} {_plural(total, 'level')} to train on "
+                        f"{len(key_below)} key {_plural(len(key_below), 'skill')}"
+                    ),
+                    detail=f"{listing}.",
+                    priority=Priority.HIGH,
+                    score=float(total) * 4.0,
+                )
+            )
+
+        # --- everything else, summarised by category ----------------------
         for category, label in (("Active", "active"), ("Dp", "stigma"),
                                 ("Passive", "passive")):
             below = [
                 s for s in char.skills
                 if s.category == category and s.in_use
+                and s.name not in key_names
                 and (cap - s.base_level) >= min_gap
             ]
             if not below:
@@ -477,30 +511,21 @@ class Engine:
             below.sort(key=lambda s: s.base_level)
 
             total_levels = sum(cap - s.base_level for s in below)
-            worst = below[:4]
-            listing = ", ".join(
-                f"{s.name} {s.base_level}/{cap}" for s in worst
-            )
-            if len(below) > 4:
-                listing += f", +{len(below) - 4} more"
+            listing = ", ".join(f"{s.name} {s.base_level}/{cap}" for s in below[:3])
+            if len(below) > 3:
+                listing += f", +{len(below) - 3} more"
 
             out.append(
                 Recommendation(
                     category="skill",
                     title=(
-                        f"{total_levels} {_plural(total_levels, 'level')} of "
-                        f"{label} skill training left"
+                        f"{total_levels} {_plural(total_levels, 'level')} on "
+                        f"other {label} skills"
                     ),
-                    detail=(
-                        f"{len(below)} {label} "
-                        f"{_plural(len(below), 'skill')} below {cap}: {listing}."
-                    ),
-                    priority=(
-                        Priority.HIGH if category in ("Active", "Dp")
-                        and total_levels >= 20 else Priority.MEDIUM
-                    ),
+                    detail=f"{listing}. Lower priority than the key skills above.",
+                    priority=Priority.LOW,
                     score=float(total_levels) * (
-                        2.0 if category in ("Active", "Dp") else 1.0
+                        0.8 if category in ("Active", "Dp") else 0.4
                     ),
                 )
             )
@@ -537,6 +562,106 @@ class Engine:
                 )
             )
 
+        return out
+
+    def key_skills(self, char: Character) -> list[Skill]:
+        """The skills worth spending gear slots on, in configured order."""
+        cfg = self.cfg.get("skills") or {}
+        names = list(cfg.get("key_active") or []) + list(cfg.get("key_passive") or [])
+        by_name = {s.name: s for s in char.skills}
+        return [by_name[n] for n in names if n in by_name]
+
+    def skill_slots(self, char: Character) -> list[Recommendation]:
+        """Unused gear skill slots, matched against key skills below cap.
+
+        Equipment carries `subSkills` worth +N to a named skill, with
+        `subSkillCountMax` as the capacity. This is not Arcana-only: rings,
+        cloak, pauldrons, breastplate and necklace all carry them, and weapons
+        and some earrings hold five.
+
+        An empty slot is a free skill level going unused.
+        """
+        cfg = self.cfg.get("skill_slots") or {}
+        min_empty = int(cfg.get("min_empty_to_report", 1))
+        cap = int((self.cfg.get("skills") or {}).get("level_cap", SKILL_LEVEL_CAP))
+
+        with_space = [
+            it for it in char.items if it.empty_skill_slots >= min_empty
+        ]
+        if not with_space:
+            return []
+
+        total_empty = sum(it.empty_skill_slots for it in with_space)
+
+        # Which key skills would most benefit from a gear grant.
+        #
+        # Measured on TRAINED level, consistently with skill_levels. A gear
+        # grant and a trained level are interchangeable ways to close the same
+        # gap, so judging this on effective_level contradicted the sweep --
+        # one row claimed every key skill was capped while the next listed
+        # nine that were not.
+        wanted = [s for s in self.key_skills(char) if s.base_level < cap]
+        wanted.sort(key=lambda s: s.base_level)
+
+        out: list[Recommendation] = []
+
+        if wanted:
+            targets = ", ".join(
+                f"{s.name} {s.base_level}/{cap}"
+                + (f", already +{s.gear_bonus} from gear" if s.gear_bonus else "")
+                for s in wanted[:3]
+            )
+            detail = f"Key skills short of {cap}: {targets}."
+        else:
+            detail = (
+                f"Every key skill is already trained to {cap}, so spend these "
+                "on whatever your rotation leans on hardest."
+            )
+
+        out.append(
+            Recommendation(
+                category="skillslot",
+                title=(
+                    f"{total_empty} empty gear skill "
+                    f"{_plural(total_empty, 'slot')} across "
+                    f"{len(with_space)} {_plural(len(with_space), 'item')}"
+                ),
+                detail=detail,
+                priority=Priority.HIGH if total_empty >= 10 else Priority.MEDIUM,
+                score=float(total_empty) * 6.0,
+            )
+        )
+
+        # Call out the roomiest items individually; those are the easy wins.
+        biggest = sorted(
+            with_space, key=lambda it: -it.empty_skill_slots
+        )[:4]
+        for item in biggest:
+            if item.empty_skill_slots < 3:
+                continue
+            have = ", ".join(f"{n} +{lv}" for n, lv in item.sub_skills) or "nothing"
+            suggest = ", ".join(s.name for s in wanted[:2]) if wanted else ""
+            detail = (
+                f"{item.empty_skill_slots} of {item.sub_skill_slots} slots unused. "
+                f"Currently grants {have}."
+            )
+            if suggest:
+                detail += f" Good candidates: {suggest}."
+            out.append(
+                Recommendation(
+                    category="skillslot",
+                    title=(
+                        f"{item.name} ({item.slot_name}) has "
+                        f"{item.empty_skill_slots} free skill "
+                        f"{_plural(item.empty_skill_slots, 'slot')}"
+                    ),
+                    detail=detail,
+                    priority=Priority.MEDIUM,
+                    score=float(item.empty_skill_slots) * 4.0,
+                    slot_name=item.slot_name,
+                    item_name=item.name,
+                )
+            )
         return out
 
     def soul_binding(self, char: Character) -> list[Recommendation]:
@@ -774,6 +899,7 @@ class Engine:
 
         recs += self.enhancement_upgrades(char)
         recs += self.skill_levels(char)
+        recs += self.skill_slots(char)
         recs += self.soul_binding(char)
         recs += self.empty_stone_slots(char)
         recs += self.manastone_swaps(char)

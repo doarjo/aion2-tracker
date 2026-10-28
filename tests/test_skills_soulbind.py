@@ -135,7 +135,14 @@ def test_skill_sweep_against_real_character(engine):
     recs = engine.skill_levels(char)
     assert recs, "but there is still plenty of training left"
     titles = " ".join(r.title for r in recs)
-    assert "active skill training" in titles
+
+    # Key skills are named first; the rest are summarised below them.
+    assert "key skills" in titles
+    assert "other active skills" in titles
+
+    key_rec = next(r for r in recs if "key skills" in r.title)
+    other = next(r for r in recs if "other active" in r.title)
+    assert int(key_rec.priority) > int(other.priority)
 
 
 # --------------------------------------------------------------------------

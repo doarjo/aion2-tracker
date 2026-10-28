@@ -332,8 +332,8 @@
   <h2>Equipment <span class="n">· {{ character.items|length }} slots</span></h2>
   <div class="tbl-wrap"><table>
     <thead><tr>
-      <th>Slot</th><th>Item</th><th class="num">Enh</th>
-      <th>Manastones</th><th class="num">Waste</th>
+      <th>Slot</th><th>Item</th><th class="num">Enh</th><th class="num">Bind</th>
+      <th class="num">Skills</th><th>Manastones</th><th class="num">Waste</th>
     </tr></thead>
     <tbody>
     {% for it in character.items %}
@@ -344,6 +344,10 @@
             {{ it.set_equipped }}pc</span>{% endif %}</td>
         <td class="num enh">+{{ it.enchant_level }}<span class="dim"
             style="font-weight:400">/{{ it.max_enchant_level }}</span></td>
+        <td class="num {% if it.soul_bind_rate < 50 %}bad{% elif it.soul_bind_rate < 90 %}muted{% else %}dim{% endif %}">
+          {{ "%g"|format(it.soul_bind_rate) }}%</td>
+        <td class="num {% if it.empty_skill_slots %}enh{% else %}dim{% endif %}">
+          {% if it.sub_skill_slots %}{{ it.sub_skills|length }}/{{ it.sub_skill_slots }}{% else %}·{% endif %}</td>
         <td>
           {% for st in it.stones %}
             <span class="stone {% if st.wasted %}waste{% endif %}"
@@ -362,22 +366,41 @@
 
   <div class="cols" style="margin-top:12px">
     <div>
-      <h2>Stigmas &amp; key skills</h2>
+      <h2>Key skills <span class="n">· trained / cap</span></h2>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Skill</th><th class="num">Base</th><th class="num">Daev</th>
-          <th class="num">Arc</th><th class="num">Total</th></tr></thead>
+        <thead><tr><th>Skill</th><th class="num">Trained</th>
+          <th class="num">Boards</th><th class="num">Gear</th>
+          <th class="num">Total</th></tr></thead>
         <tbody>
-        {% for s in character.skills|sort(attribute='effective_level', reverse=true) %}
-          {% if s.is_stigma or s.effective_level >= 20 %}
+        {% for s in key_skills %}
           <tr>
-            <td>{{ s.name }}{% if s.is_stigma %}
-              <span class="dim"> · stigma</span>{% endif %}</td>
-            <td class="num dim">{{ s.base_level }}</td>
+            <td>{{ s.name }}</td>
+            <td class="num {% if s.base_level < skill_cap %}bad{% endif %}">
+              {{ s.base_level }}<span class="dim">/{{ skill_cap }}</span></td>
             <td class="num dim">{{ s.daevanion_bonus or '·' }}</td>
-            <td class="num dim">{{ s.arcana_bonus or '·' }}</td>
+            <td class="num {% if s.gear_bonus %}enh{% else %}dim{% endif %}">
+              {{ s.gear_bonus or '·' }}</td>
             <td class="num" style="font-weight:650">{{ s.effective_level }}</td>
           </tr>
-          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table></div>
+
+      <h2 style="margin-top:14px">Stigmas</h2>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Stigma</th><th class="num">Level</th>
+          <th class="num">Status</th></tr></thead>
+        <tbody>
+        {% for s in character.skills|selectattr('is_stigma')|sort(attribute='base_level', reverse=true) %}
+          <tr>
+            <td>{{ s.name }}</td>
+            <td class="num {% if s.acquired and s.base_level < skill_cap %}bad{% endif %}">
+              {{ s.base_level }}<span class="dim">/{{ skill_cap }}</span></td>
+            <td class="num dim">
+              {%- if not s.acquired %}not learned
+              {%- elif not s.equipped %}<span class="bad">not slotted</span>
+              {%- else %}slotted{% endif %}</td>
+          </tr>
         {% endfor %}
         </tbody>
       </table></div>

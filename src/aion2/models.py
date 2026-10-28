@@ -94,6 +94,9 @@ class Item:
     stones: list[StatLine] = field(default_factory=list)
     god_stones: list[dict[str, Any]] = field(default_factory=list)
     sub_skills: list[tuple[str, int]] = field(default_factory=list)
+    #: How many skill grants this item can hold. Weapons and some
+    #: earrings hold 5; bracelets, belt, runes and the amulet hold none.
+    sub_skill_slots: int = 0
     set_name: str = ""
     set_equipped: int = 0
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -113,6 +116,11 @@ class Item:
     @property
     def empty_stone_slots(self) -> int:
         return max(0, self.magic_stone_slots - len(self.stones))
+
+    @property
+    def empty_skill_slots(self) -> int:
+        """Unused skill grants. A free skill level going begging."""
+        return max(0, self.sub_skill_slots - len(self.sub_skills))
 
     def total(self, stat_id: str) -> float:
         """Sum of one stat across every line on this item."""
@@ -162,6 +170,7 @@ class Item:
                 (s.get("name", ""), int(s.get("level") or 0))
                 for s in _arr(payload, "subSkills")
             ],
+            sub_skill_slots=int(payload.get("subSkillCountMax") or 0),
             set_name=set_obj.get("name", ""),
             set_equipped=int(set_obj.get("equippedCount") or 0),
             raw=payload,
@@ -184,13 +193,13 @@ class Skill:
     category: str          # Active | Passive | Dp  (Dp == Stigma)
     base_level: int
     daevanion_bonus: int = 0
-    arcana_bonus: int = 0
+    gear_bonus: int = 0
     acquired: bool = True
     equipped: bool = False
 
     @property
     def effective_level(self) -> int:
-        return self.base_level + self.daevanion_bonus + self.arcana_bonus
+        return self.base_level + self.daevanion_bonus + self.gear_bonus
 
     @property
     def is_stigma(self) -> bool:
@@ -368,10 +377,12 @@ def build_character(
         for sk_name, amount in b.skill_effects:
             daev[sk_name] = daev.get(sk_name, 0) + amount
 
-    arcana: dict[str, int] = {}
+    # Every item type can carry subSkills, not only Arcana: rings, cloak,
+    # pauldrons, breastplate and necklace all do on our own Ranger.
+    gear: dict[str, int] = {}
     for it in item_list:
         for sk_name, lvl in it.sub_skills:
-            arcana[sk_name] = arcana.get(sk_name, 0) + lvl
+            gear[sk_name] = gear.get(sk_name, 0) + lvl
 
     skills: list[Skill] = []
     for s in (equipment.get("skill") or {}).get("skillList") or []:
@@ -382,7 +393,7 @@ def build_character(
                 category=s.get("category", ""),
                 base_level=int(s.get("skillLevel") or 0),
                 daevanion_bonus=daev.get(nm, 0),
-                arcana_bonus=arcana.get(nm, 0),
+                gear_bonus=gear.get(nm, 0),
                 acquired=bool(s.get("acquired")),
                 equipped=bool(s.get("equip")),
             )

@@ -135,6 +135,36 @@ skills:
   # Ignore skills within this many levels of the cap, to avoid noise.
   min_gap_to_report: 1
 
+  # The skills actually worth pushing. Recommendations about gear skill slots
+  # target these rather than spreading across all 35, because a slot spent on
+  # Explosion Trap is a slot not spent on Deadshot.
+  #
+  # Ordered most important first. Retune for your own rotation.
+  key_active:
+    - Deadshot
+    - Snipe
+    - Gale Arrow
+    - Tempest Shot
+    - Drill Dart
+  key_passive:
+    - Rooting Eye
+    - Focused Eye
+    - Concentrated Fire
+    - Hunter's Soul
+    - Vigilant Eye
+
+# Gear-granted skill levels.
+#
+# Equipment carries `subSkills`, each worth +N to a named skill, with
+# `subSkillCountMax` as the capacity. This is NOT Arcana-only -- rings,
+# cloak, pauldrons, breastplate and necklace all carry them, and weapons and
+# earrings have the largest capacity at 5.
+#
+# An empty slot is a free skill level going unused.
+skill_slots:
+  # Report items with at least this many empty slots.
+  min_empty_to_report: 1
+
 soul_binding:
   # Soul bind rate is a percentage per item. It is NOT always 100 -- our
   # Ranger's bow reads 13.3. What it does mechanically is not published and

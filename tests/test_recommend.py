@@ -51,16 +51,27 @@ def test_arcana_slots_present(char):
 
 def test_effective_skill_level_sums_three_sources(char):
     """Reading skillLevel alone under-reports. Deadshot is 20 listed but 30
-    effective once Daevanion and Arcana are counted."""
+    effective once Daevanion and gear grants are counted."""
     deadshot = char.skill("Deadshot")
     assert deadshot is not None
     assert deadshot.base_level == 20
     assert deadshot.daevanion_bonus > 0
-    assert deadshot.arcana_bonus > 0
+    assert deadshot.gear_bonus > 0
     assert deadshot.effective_level == (
-        deadshot.base_level + deadshot.daevanion_bonus + deadshot.arcana_bonus
+        deadshot.base_level + deadshot.daevanion_bonus + deadshot.gear_bonus
     )
     assert deadshot.effective_level > deadshot.base_level
+
+
+def test_gear_skill_grants_are_not_arcana_only(char):
+    """The field was called arcana_bonus, which hid the fact that rings,
+    cloak, pauldrons, breastplate and necklace all grant skill levels too."""
+    granting = [it for it in char.items if it.sub_skills]
+    non_arcana = [it for it in granting if not it.is_arcana]
+
+    assert non_arcana, "non-Arcana items grant skill levels"
+    slots = {it.slot_name for it in non_arcana}
+    assert "Ring1" in slots or "Ring2" in slots
 
 
 def test_stigmas_are_category_dp(char):
@@ -68,10 +79,10 @@ def test_stigmas_are_category_dp(char):
     assert stigmas, "Ranger should have Dp skills"
     names = {s.name for s in stigmas}
     assert "Vaizel's Authority" in names
-    # Dp skills receive no Daevanion or Arcana bonuses.
+    # Dp skills receive no Daevanion or gear bonuses.
     for s in stigmas:
         assert s.daevanion_bonus == 0
-        assert s.arcana_bonus == 0
+        assert s.gear_bonus == 0
 
 
 def test_gear_accuracy_excludes_status_effect_chance(char):
