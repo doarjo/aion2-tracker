@@ -51,6 +51,10 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8080
     mcp_auth_token: str = ""
+    #: Hostnames the MCP endpoint will answer to. The SDK rejects any
+    #: other Host header as DNS rebinding, which bites the moment the
+    #: service sits behind a tunnel presenting its own hostname.
+    mcp_allowed_hosts: tuple[str, ...] = ()
     thresholds_path: str = ""
 
     @property
@@ -109,6 +113,9 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         host=_env("AION2_HOST", "0.0.0.0"),
         port=_env_int("AION2_PORT", 8080),
         mcp_auth_token=_env("MCP_AUTH_TOKEN"),
+        mcp_allowed_hosts=tuple(
+            h.strip() for h in _env("MCP_ALLOWED_HOSTS").split(",") if h.strip()
+        ),
         # Empty means "search the conventional locations" rather than a guess
         # that may not exist. See paths.find_config_file.
         thresholds_path=_env("AION2_THRESHOLDS") or str(found or ""),

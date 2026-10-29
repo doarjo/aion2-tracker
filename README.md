@@ -121,6 +121,55 @@ network.
 | `GET /api/profiles` | Available goal profiles |
 | `GET /api/history?stat=combat_power&days=90` | Time series |
 | `POST /refresh` | Take a snapshot, respects the cooldown. `?force=true` overrides |
+| `POST /mcp` | MCP server over Streamable HTTP, bearer auth |
+
+---
+
+## MCP server
+
+The original point of the project: let Claude read the character directly
+instead of being sent screenshots. Nine tools, all read-only except
+`refresh`.
+
+| Tool | What it answers |
+|---|---|
+| `get_character` | Class, level, Combat Power, attributes |
+| `get_equipment` | Every slot: enhancement, soul bind, stones, rolls |
+| `get_skills` | Trained vs in-game level, and where the difference comes from |
+| `get_daevanion` | Board progress |
+| `get_recommendations` | Ranked list of what to fix next |
+| `get_history` | How a number has actually moved |
+| `search_character` | Find any character by name |
+| `compare_to` | Gaps against a captured reference build |
+| `refresh` | Take a snapshot, cooldown applies |
+
+Add it to Claude Code:
+
+```bash
+claude mcp add --transport http aion2 http://192.168.100.30:8080/mcp   --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+Two settings matter:
+
+* `MCP_AUTH_TOKEN` — without it `/mcp` is unauthenticated, which is fine on a
+  LAN and not fine behind a public hostname, since `refresh` makes requests
+  to PLAYNC in your name.
+* `MCP_ALLOWED_HOSTS` — the SDK rejects unexpected Host headers as DNS
+  rebinding with HTTP 421. Behind a tunnel you must list the hostname, for
+  example `aion2.23nit.com`.
+
+Both caveats the engine carries are repeated in the tool output, so a caller
+reading a single result still sees them: figures reflect the **active preset
+only**, and Combat Power is a **ranked heuristic rather than a calculation**.
+
+---
+
+## Automatic snapshots
+
+`SNAPSHOT_INTERVAL_HOURS` (default 6) schedules a background snapshot. Set it
+to 0 to disable. Runs are skipped rather than queued if one is already in
+flight, and are jittered by up to ten minutes so a container restart loop
+cannot hammer PLAYNC.
 
 ---
 

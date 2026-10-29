@@ -11,15 +11,14 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "apscheduler>=3.10",
+    # The MCP server is the point of the project, not an optional extra.
+    "mcp>=2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
-]
-mcp = [
-    "mcp>=1.2",
 ]
 
 [project.scripts]
@@ -39,3 +38,4 @@ aion2 = ["templates/*.html"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "auto"

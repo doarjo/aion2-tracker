@@ -141,7 +141,10 @@ AION2_PROJECT_ROOT=/app
 AION2_HOST=0.0.0.0
 AION2_PORT=8080
 
+# Generate: python -c "import secrets; print(secrets.token_hex(32))"
 MCP_AUTH_TOKEN=
+# Required behind a tunnel: the MCP SDK rejects unknown Host headers.
+MCP_ALLOWED_HOSTS=192.168.100.30,aion2.23nit.com
 TZ=Europe/Bucharest
 EOF
 

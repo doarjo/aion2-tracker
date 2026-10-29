@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
+from contextlib import asynccontextmanager
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +19,8 @@ from typing import Any
 from .models import Character  # noqa: F401  (used in type hints below)
 
 from fastapi import FastAPI, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -47,9 +51,31 @@ _jinja.filters["statname"] = lambda sid: S.display_name(sid)
 _refresh_lock = threading.Lock()
 
 
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    """Constant-time bearer check for the MCP endpoint.
+
+    compare_digest rather than == so the comparison does not leak the token
+    a character at a time through timing.
+    """
+
+    def __init__(self, app, token: str) -> None:
+        super().__init__(app)
+        self._expected = f"Bearer {token}"
+
+    async def dispatch(self, request, call_next):
+        sent = request.headers.get("authorization", "")
+        if not secrets.compare_digest(sent, self._expected):
+            return PlainTextResponse("unauthorized", status_code=401)
+        return await call_next(request)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or load_settings()
-    app = FastAPI(title="AION 2 Tracker", docs_url=None, redoc_url=None)
+    mcp_app, mcp_lifespan = _build_mcp(cfg)
+    app = FastAPI(
+        title="AION 2 Tracker", docs_url=None, redoc_url=None,
+        lifespan=mcp_lifespan,
+    )
     thresholds = load_config(cfg.thresholds_path or None, strict=False)
     engine = Engine(thresholds)
     profiles = Engine.available_profiles(thresholds)
@@ -237,7 +263,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return JSONResponse({"status": "ok", "snapshot_id": snapshot_id})
 
+    if mcp_app is not None:
+        app.mount("/mcp", mcp_app)
+    _start_scheduler(app, cfg)
+
     return app
+
+
+def _transport_security(cfg: Settings):
+    """Hosts the MCP endpoint will answer to.
+
+    The SDK enforces DNS-rebinding protection and rejects any unexpected Host
+    header with 421. That is correct for a local server and wrong the moment
+    the service sits behind a tunnel presenting its own hostname, so the
+    allowed list has to include wherever it is actually reached.
+
+    MCP_ALLOWED_HOSTS="*" turns the protection off entirely. Only sensible
+    when something in front is already validating the host.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    extra = list(cfg.mcp_allowed_hosts)
+    if "*" in extra:
+        log.warning(
+            "MCP_ALLOWED_HOSTS=* disables DNS rebinding protection on /mcp."
+        )
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    hosts = [
+        "localhost", f"localhost:{cfg.port}",
+        "127.0.0.1", f"127.0.0.1:{cfg.port}",
+        *extra,
+        *[f"{h}:{cfg.port}" for h in extra if ":" not in h],
+    ]
+    origins = [f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts]
+    return TransportSecuritySettings(
+        allowed_hosts=hosts, allowed_origins=origins
+    )
+
+
+def _build_mcp(cfg: Settings):
+    """Build the MCP sub-app and the lifespan that powers it.
+
+    The session manager runs a task group that must be entered before any
+    request arrives. A sub-app mounted into FastAPI does NOT get its own
+    lifespan run, so the parent has to drive it -- otherwise the first call
+    fails with "Task group is not initialized".
+
+    Returns (sub_app, lifespan) or (None, None) when mcp is unavailable.
+    """
+    try:
+        from .mcp_server import build_server
+    except ImportError:
+        log.warning("mcp package not installed; /mcp disabled")
+        return None, None
+
+    server = build_server(cfg)
+    # Path "/" inside the sub-app: mounting at /mcp would otherwise nest the
+    # SDK's own default and serve the endpoint at /mcp/mcp.
+    sub_app = server.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+        transport_security=_transport_security(cfg),
+    )
+
+    token = cfg.mcp_auth_token.strip()
+    if token:
+        # A Starlette app has add_middleware but not FastAPI's decorator.
+        sub_app.add_middleware(BearerAuthMiddleware, token=token)
+        log.info("/mcp mounted with bearer auth")
+    else:
+        # Loud, because an unauthenticated /mcp behind a public hostname lets
+        # anyone trigger refresh() against PLAYNC in your name.
+        log.warning(
+            "MCP_AUTH_TOKEN is empty: /mcp is UNAUTHENTICATED. Fine on a LAN, "
+            "not fine behind a public hostname."
+        )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        async with server.session_manager.run():
+            yield
+
+    return sub_app, lifespan
+
+
+def _start_scheduler(app: FastAPI, cfg: Settings) -> None:
+    """Snapshot automatically every SNAPSHOT_INTERVAL_HOURS.
+
+    Specified in the original brief and never wired up until now. Skipped
+    when the interval is 0 or the character is not configured.
+    """
+    hours = cfg.snapshot_interval_hours
+    if hours <= 0 or not cfg.configured:
+        return
+
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+    except ImportError:
+        log.warning("apscheduler not installed; automatic snapshots disabled")
+        return
+
+    def tick() -> None:
+        if not _refresh_lock.acquire(blocking=False):
+            log.info("scheduled snapshot skipped: one already running")
+            return
+        try:
+            snapshot_id = run_snapshot(cfg)
+            log.info("scheduled snapshot #%s stored", snapshot_id)
+        except Exception as exc:  # noqa: BLE001 - never kill the scheduler
+            log.error("scheduled snapshot failed: %s", exc)
+        finally:
+            _refresh_lock.release()
+
+    scheduler = BackgroundScheduler(daemon=True)
+    # jitter spreads restarts so a container flap does not hammer PLAYNC
+    scheduler.add_job(
+        tick,
+        IntervalTrigger(hours=hours, jitter=600),
+        id="snapshot",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.start()
+    app.state.scheduler = scheduler
+    log.info("automatic snapshots every %dh", hours)
 
 
 CATEGORY_LABELS: dict[str, str] = {
