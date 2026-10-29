@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 
 from . import db
-from .client import Aion2Client, Aion2Error
+from .client import Aion2Client, Aion2Error, CharacterRef
+from .compare import compare as compare_builds
+from .compare import skill_gaps
 from .config import load_settings
 from .fetch import snapshot_payloads
 from .recommend import ConfigNotFound, Engine, UnknownProfile, load_config
@@ -259,6 +261,88 @@ def cmd_catalog(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Measure your build against another character's.
+
+    Fetches one named character you asked about. Not bulk collection.
+    """
+    import json as _json
+
+    cfg = load_settings(args.env_file)
+    engine = Engine(
+        load_config(args.thresholds or cfg.thresholds_path or None),
+        profile=args.profile,
+    )
+
+    row = db.latest_snapshot(cfg.db_path, cfg.character_id or None)
+    if row is None:
+        print("No snapshot of your own character yet. Run 'aion2 snapshot'.",
+              file=sys.stderr)
+        return 1
+    mine = from_payloads(_json.loads(row["payload"] or "{}"))
+
+    cache = Path(cfg.db_path).parent / "reference" / f"{args.name.lower()}.json"
+    if cache.exists() and not args.refresh:
+        print(f"Using cached capture of {args.name}. --refresh to re-fetch.")
+        payloads = _json.loads(cache.read_text(encoding="utf-8"))
+    else:
+        region = args.region or cfg.region
+        with Aion2Client(rate_limit_seconds=cfg.rate_limit_seconds) as client:
+            ref = client.resolve(args.name, region, args.server_id or cfg.server_id)
+            print(f"Capturing {ref.name}, level {ref.level} on {ref.server_name}.")
+            print("About 60 rate-limited requests, so roughly four minutes.")
+
+            def prog(stage: str, done: int, total: int) -> None:
+                if done == total:
+                    print(f"  {stage} {done}/{total}", flush=True)
+
+            payloads = snapshot_payloads(client, ref, progress=prog)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(payloads, ensure_ascii=False), encoding="utf-8")
+
+    theirs = from_payloads(payloads)
+    result = compare_builds(mine, theirs, engine)
+
+    print()
+    print(f"{mine.name} vs {theirs.name}  --  {engine.profile_label}")
+    print("=" * 66)
+    print(f"{'':<26}{mine.name:>13}{theirs.name:>13}{'gap':>13}")
+    for g in result.gaps:
+        arrow = "behind" if g.behind else ("ahead" if g.delta else "level")
+        print(
+            f"{g.dimension:<26}{g.format(g.mine):>13}{g.format(g.theirs):>13}"
+            f"{arrow:>13}"
+        )
+
+    behind = result.behind_on
+    if behind:
+        print()
+        print("Biggest gaps, proportionally:")
+        for g in behind[:4]:
+            print(f"  {g.dimension}: {g.format(g.mine)} vs {g.format(g.theirs)}")
+            if g.note:
+                print(f"      {g.note}")
+
+    gaps = skill_gaps(mine, theirs, engine)
+    if gaps:
+        print()
+        print("Key skills where they are ahead:")
+        for name, a, b in gaps:
+            print(f"  {name:<22} {a} vs {b}")
+
+    if result.notes:
+        print()
+        for n in result.notes:
+            print(f"  {n}")
+
+    ahead = result.ahead_on
+    if ahead:
+        print()
+        print("Where you are ahead: " + ", ".join(g.dimension for g in ahead))
+
+    return 0
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     """Show how a tracked number has moved across snapshots.
 
@@ -359,6 +443,18 @@ def build_parser() -> argparse.ArgumentParser:
     cat_.add_argument("--refresh", action="store_true", help="re-fetch everything")
     cat_.add_argument("--rate-limit", type=float, default=2.0)
     cat_.set_defaults(func=cmd_catalog)
+
+    cmp_ = sub.add_parser(
+        "compare", help="measure your build against another character"
+    )
+    cmp_.add_argument("name")
+    cmp_.add_argument("--region", default=None)
+    cmp_.add_argument("--server-id", type=int, default=None)
+    cmp_.add_argument("--profile", default=None)
+    cmp_.add_argument("--thresholds", default=None)
+    cmp_.add_argument("--refresh", action="store_true",
+                      help="re-fetch rather than using the cached capture")
+    cmp_.set_defaults(func=cmd_compare)
 
     h = sub.add_parser("history", help="how a tracked number moved over time")
     h.add_argument(

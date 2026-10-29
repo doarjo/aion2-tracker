@@ -31,3 +31,7 @@ venv/
 Thumbs.db
 desktop.ini
 *.swp
+
+# captured reference builds (other players' public data; re-fetch with
+# `aion2 compare <name>` rather than committing someone else's profile)
+/data/reference/
