@@ -10,7 +10,7 @@ from pathlib import Path
 from . import db
 from .client import Aion2Client, Aion2Error, CharacterRef
 from .compare import compare as compare_builds
-from .compare import skill_gaps
+from .compare import detect_preset_change, skill_gaps
 from .config import load_settings
 from .fetch import snapshot_payloads
 from .recommend import ConfigNotFound, Engine, UnknownProfile, load_config
@@ -151,6 +151,7 @@ def _print_audit(char, engine: Engine, limit: int | None, catalog=None) -> None:
     print(f"Gear Accuracy {char.gear_accuracy:g} "
           f"(components only, not an in-game total)")
     print(f"{len(char.wasted_lines)} wasted stat lines")
+    print("Reflects your ACTIVE preset only; PLAYNC exposes no others.")
     if char.has_enhancement_data:
         print(f"{char.enhancement_levels_available} enhancement levels available")
     else:
@@ -305,6 +306,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
     print()
     print(f"{mine.name} vs {theirs.name}  --  {engine.profile_label}")
+    print("Both sides show whichever preset was ACTIVE when captured.")
     print("=" * 66)
     print(f"{'':<26}{mine.name:>13}{theirs.name:>13}{'gap':>13}")
     for g in result.gaps:
@@ -378,6 +380,36 @@ def cmd_history(args: argparse.Namespace) -> int:
     if change and first:
         print(f"  {100.0 * change / first:+.2f}% from the first snapshot")
     return 0
+
+
+def _warn_about_preset_switches(cfg) -> None:
+    """A big one-step gear change is more likely a preset switch than
+    progress, and reads as a bug in the history if unexplained."""
+    import json as _json
+
+    with db.connect(cfg.db_path) as conn:
+        rows = conn.execute(
+            "SELECT taken_at, payload FROM snapshots "
+            "WHERE character_id = ? ORDER BY taken_at",
+            (cfg.character_id,),
+        ).fetchall()
+
+    chars = []
+    for r in rows:
+        try:
+            chars.append((r["taken_at"], from_payloads(_json.loads(r["payload"]))))
+        except Exception:  # noqa: BLE001 - a bad row must not break history
+            continue
+
+    for (_t0, a), (t1, b) in zip(chars, chars[1:]):
+        change = detect_preset_change(a, b)
+        if change.likely:
+            print(
+                f"\n  NOTE {t1[:16]}: {change.slots_changed} of "
+                f"{change.slots_total} slots changed item at once "
+                f"({change.cp_delta:+,} CP). That looks like a preset "
+                f"switch rather than progression."
+            )
 
 
 def cmd_serve(args: argparse.Namespace) -> int:

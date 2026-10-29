@@ -157,3 +157,61 @@ def test_reference_is_nearly_fully_enhanced(engine):
     """The headline finding: their CP lead is mostly enhancement."""
     theirs = from_payloads(json.loads(REFERENCE.read_text(encoding="utf-8")))
     assert theirs.enhancement_levels_available < 20
+
+
+# --------------------------------------------------------------------------
+# presets
+# --------------------------------------------------------------------------
+
+
+def test_preset_switch_is_flagged_when_many_slots_change():
+    """PLAYNC exposes only the active preset, so a wholesale gear swap between
+    snapshots is far more likely a preset switch than progression."""
+    from aion2.compare import PRESET_SWITCH_SLOTS, detect_preset_change
+
+    before = _char("a", cp=160000, items=[
+        _item(i, 11, 15, item_id=100 + i) for i in range(1, 9)
+    ])
+    after = _char("a", cp=120000, items=[
+        _item(i, 11, 15, item_id=900 + i) for i in range(1, 9)
+    ])
+
+    change = detect_preset_change(before, after)
+    assert change.slots_changed == 8
+    assert change.likely
+    assert change.cp_delta == -40000
+    assert len(change.changed_slots) == 8
+
+
+def test_one_item_upgrade_is_not_a_preset_switch():
+    from aion2.compare import detect_preset_change
+
+    before = _char("a", items=[_item(i, 11, 15, item_id=100 + i) for i in range(1, 9)])
+    items = [_item(i, 11, 15, item_id=100 + i) for i in range(1, 9)]
+    items[0] = _item(1, 11, 15, item_id=777)
+    after = _char("a", items=items)
+
+    change = detect_preset_change(before, after)
+    assert change.slots_changed == 1
+    assert not change.likely
+
+
+def test_enhancing_without_swapping_is_not_a_preset_switch():
+    """Same items at higher enchant levels is progression, not a swap."""
+    from aion2.compare import detect_preset_change
+
+    before = _char("a", items=[_item(i, 11, 15, item_id=100 + i) for i in range(1, 9)])
+    after = _char("a", items=[_item(i, 15, 15, item_id=100 + i) for i in range(1, 9)])
+
+    change = detect_preset_change(before, after)
+    assert change.slots_changed == 0
+    assert not change.likely
+
+
+def test_slots_only_in_one_snapshot_are_not_counted():
+    """An item added to a previously empty slot is not a change of preset."""
+    from aion2.compare import detect_preset_change
+
+    before = _char("a", items=[_item(1, 0, 10, item_id=1)])
+    after = _char("a", items=[_item(1, 0, 10, item_id=1), _item(2, 0, 10, item_id=2)])
+    assert detect_preset_change(before, after).slots_changed == 0

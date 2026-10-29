@@ -395,6 +395,36 @@ It prints the resolved `AION2_REGION` / `AION2_SERVER_ID` / `AION2_CHARACTER_ID`
 
 ---
 
+## 7a. Presets — a hard limit
+
+AION 2 has presets for gear, skills and pets. **The API exposes only the
+active one**, with no way to request another and no field saying which is
+live.
+
+Verified by probing the equipment endpoint with thirteen candidate selectors
+(`preset`, `presetId`, `presetNo`, `presetIndex`, `slotIndex`, `setId`,
+`setNo`, `loadout`, `buildId`, `tab`, `page`, `index`, `type`, `equipType`),
+each at two values. Every single response was **byte-identical** to the
+baseline, same MD5 and same 16,034 bytes. The parameters are ignored.
+
+`petwing.pet` likewise returns one pet, not a list.
+
+Consequences the project has to live with:
+
+* A snapshot captures whatever was equipped at that moment. Switching presets
+  between snapshots looks like a sudden gain or loss in the history.
+* Comparing two characters compares whichever preset each had active, which
+  may not be the one either of them raids in.
+* Recommendations target the active preset. Acting on them after switching
+  preset applies them to the wrong build.
+
+Handled by `compare.detect_preset_change`, which flags any snapshot pair
+where five or more slots changed item at once, since that is far more likely
+a preset switch than progression. The audit, the compare output and the
+dashboard footer all state the limitation rather than letting it mislead.
+
+---
+
 ## 8. Open items
 
 **Resolved since the first pass:** the Ranger is captured, Arcana turned out to be public, Stigmas are identifiable via `category: "Dp"`, and Genus Insight is confirmed absent.

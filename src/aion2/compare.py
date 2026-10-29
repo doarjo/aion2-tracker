@@ -190,6 +190,52 @@ def _gear_overlap(mine: Character, theirs: Character) -> tuple[list[Item], list[
     return same, different
 
 
+#: How many slots must change at once before a snapshot-to-snapshot
+#: difference looks more like a preset switch than like progression.
+PRESET_SWITCH_SLOTS = 5
+
+
+@dataclass(slots=True)
+class PresetChange:
+    """A snapshot pair that looks like a preset switch rather than progress."""
+
+    slots_changed: int
+    slots_total: int
+    cp_delta: int
+    changed_slots: list[str] = field(default_factory=list)
+
+    @property
+    def likely(self) -> bool:
+        return self.slots_changed >= PRESET_SWITCH_SLOTS
+
+
+def detect_preset_change(before: Character, after: Character) -> PresetChange:
+    """Spot a wholesale gear swap between two snapshots.
+
+    PLAYNC exposes only the ACTIVE preset, with no way to ask for another and
+    no field saying which one is live. A character with a PvE and a PvP
+    preset therefore produces two very different snapshots depending on what
+    was equipped when the capture ran.
+
+    Replacing five items between two snapshots is possible but unusual;
+    switching a preset does it instantly. This reports the signal and lets
+    the reader judge, rather than asserting which happened.
+    """
+    before_by_slot = {it.slot_pos: it.item_id for it in before.items}
+    changed: list[str] = []
+    for it in after.items:
+        prev = before_by_slot.get(it.slot_pos)
+        if prev is not None and prev != it.item_id:
+            changed.append(it.slot_name)
+
+    return PresetChange(
+        slots_changed=len(changed),
+        slots_total=max(len(after.items), len(before.items)),
+        cp_delta=after.combat_power - before.combat_power,
+        changed_slots=changed,
+    )
+
+
 def skill_gaps(
     mine: Character, theirs: Character, engine: Engine
 ) -> list[tuple[str, int, int]]:
