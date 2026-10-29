@@ -375,6 +375,8 @@ Decide when the MCP server exists, not now.
 | `"status":"degraded"` in `/health` | `config/thresholds.yaml` not mounted. Step 1d. |
 | `404` from PLAYNC in the logs | `AION2_CHARACTER_ID` was decoded. It must keep `%3D`. |
 | Port 8080 already in use | Change the host side of the ports mapping. Unraid's GUI uses 80 and 443. |
+| `unknown shorthand flag: 'f' in -f` | `docker compose` is not installed. Unraid ships Docker without it; it comes from the **Docker Compose Manager** plugin. Use `bash deploy/bootstrap-unraid.sh` instead, which falls back to plain `docker run`. |
+| `cli-plugins/docker-compose: permission denied` | Same cause: a half-installed Compose plugin. `chmod +x` it, or reinstall the plugin, or use the bootstrap script. Note Unraid rebuilds `/root` on boot, so a chmod there does not persist. |
 | Snapshot returns `429` | Cooldown. Add `?force=true` to `/refresh` or wait it out. |
 | Container healthy, dashboard empty | No snapshot yet. Run `docker exec aion2-tracker python -m aion2 snapshot`. |
 | Permission denied on `/data` | `chown -R 1000:1000 /mnt/user/appdata/aion2-tracker/data` — the container runs as uid 1000. |

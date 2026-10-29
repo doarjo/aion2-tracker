@@ -57,10 +57,21 @@ fi
 
 [ -d /mnt/user ] || die "/mnt/user not found. Is the array started?"
 
-if ss -ltn 2>/dev/null | grep -q ":${HOST_PORT} " || netstat -ltn 2>/dev/null | grep -q ":${HOST_PORT} "; then
-  die "Port ${HOST_PORT} is already in use. Re-run with: HOST_PORT=8099 bash $0"
+# Our own container holding the port is not a conflict -- it is the thing we
+# are about to replace. Checking the port before removing it made every
+# re-run of this script fail on an existing deployment.
+port_owner=""
+if docker ps --filter "name=^${CONTAINER}$" --format '{{.Ports}}' 2>/dev/null      | grep -q ":${HOST_PORT}->"; then
+  port_owner="$CONTAINER"
 fi
-ok "port ${HOST_PORT} is free"
+
+if [ -n "$port_owner" ]; then
+  ok "port ${HOST_PORT} held by the existing ${CONTAINER}, which will be replaced"
+elif ss -ltn 2>/dev/null | grep -q ":${HOST_PORT} "      || netstat -ltn 2>/dev/null | grep -q ":${HOST_PORT} "; then
+  die "Port ${HOST_PORT} is in use by something else. Re-run with: HOST_PORT=8099 bash $0"
+else
+  ok "port ${HOST_PORT} is free"
+fi
 
 # ---------------------------------------------------------------- layout
 
